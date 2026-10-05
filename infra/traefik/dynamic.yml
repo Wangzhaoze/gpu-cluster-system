@@ -1,0 +1,26 @@
+http:
+  routers:
+    api:
+      rule: PathPrefix(`/api/`)
+      priority: 100
+      service: api
+    portal:
+      rule: PathPrefix(`/`)
+      priority: 1
+      service: portal
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: http://backend:8000
+    portal:
+      loadBalancer:
+        servers:
+          - url: http://frontend:8000
+  middlewares:
+    lab-auth:
+      forwardAuth:
+        address: http://backend:8000/api/auth/traefik
+        trustForwardHeader: false
+        authRequestHeaders:
+          - Cookie

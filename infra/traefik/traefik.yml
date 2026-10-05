@@ -1,0 +1,14 @@
+entryPoints:
+  web:
+    address: ':80'
+providers:
+  docker:
+    endpoint: unix:///var/run/docker.sock
+    exposedByDefault: false
+    network: lab-net
+    constraints: Label(`lab.project`, `gpu-lab-poc`)
+  file:
+    filename: /etc/traefik/dynamic.yml
+log:
+  level: INFO
+accessLog: {}

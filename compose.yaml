@@ -1,0 +1,120 @@
+name: gpu-lab-poc
+x-app-env: &app-env
+  POSTGRES_DB: ${POSTGRES_DB}
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME}
+  INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD}
+  SESSION_SECRET: ${SESSION_SECRET}
+  SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
+  LAB_HOST_ROOT: ${LAB_HOST_ROOT}
+  LAB_RUNTIME_ROOT: /runtime
+  DATASET_HOST_PATH: ${DATASET_HOST_PATH}
+  LAB_BASE_IMAGE: ${LAB_BASE_IMAGE}
+  LAB_SHM_SIZE: ${LAB_SHM_SIZE:-2g}
+  SCHEDULER_BACKEND: ${SCHEDULER_BACKEND:-mock-docker}
+  MOCK_GPU_COUNT: ${MOCK_GPU_COUNT:-5}
+  LOCAL_GPU_COUNT: ${LOCAL_GPU_COUNT:-1}
+
+services:
+  postgres:
+    image: lab-postgres:14-poc
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: infra/postgres/Dockerfile
+      args:
+        LOCAL_CUDA_IMAGE: ${LOCAL_CUDA_IMAGE}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'runuser -u postgres -- /usr/lib/postgresql/14/bin/pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [lab-net]
+
+  backend:
+    image: lab-backend:2026.10-poc
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        LAB_BASE_IMAGE: ${LAB_BASE_IMAGE}
+    environment: *app-env
+    volumes:
+      - ${LAB_HOST_ROOT}:/runtime
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python3, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8000/api/health")']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [lab-net]
+
+  scheduler-worker:
+    image: lab-backend:2026.10-poc
+    pull_policy: never
+    command: [python3, -m, app.worker]
+    environment: *app-env
+    volumes:
+      - ${LAB_HOST_ROOT}:/runtime
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [lab-net]
+
+  frontend:
+    image: lab-frontend:2026.10-poc
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        LAB_BASE_IMAGE: ${LAB_BASE_IMAGE}
+        LOCAL_NODE_IMAGE: ${LOCAL_NODE_IMAGE}
+    restart: unless-stopped
+    networks: [lab-net]
+
+  traefik:
+    image: lab-traefik:3.7.13-poc
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: infra/traefik/Dockerfile
+      args:
+        LOCAL_CUDA_IMAGE: ${LOCAL_CUDA_IMAGE}
+    ports:
+      - '127.0.0.1:${PORTAL_PORT:-8080}:80'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [backend, frontend]
+    restart: unless-stopped
+    networks: [lab-net]
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE}
+    pull_policy: never
+    profiles: [remote]
+    command: [tunnel, --no-autoupdate, --metrics, '0.0.0.0:20241', --url, 'http://traefik:80']
+    depends_on: [traefik]
+    restart: unless-stopped
+    networks: [lab-net]
+
+networks:
+  lab-net:
+    name: lab-net
+volumes:
+  postgres-data:
