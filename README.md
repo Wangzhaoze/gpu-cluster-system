@@ -1,60 +1,78 @@
-# GPU Lab · Windows Docker POC
+# GPU Lab
 
-基于本机已有 CUDA 镜像的实验室 cluster 框架：React Portal、FastAPI、PostgreSQL/Alembic、Traefik、独立调度 worker，以及动态 Workspace / Debug / Training 容器。
+在一台 Windows 电脑上部署 GPU Lab，并通过随机公网链接让其他网络的设备访问。
+
+## 准备
+
+- Windows 10/11，已安装并启动 Docker Desktop（WSL 2 后端、Linux containers）和 Git。
+- 能访问 Docker Hub、GitHub 和 apt/pip/npm 软件源。首次部署会下载约 7 GB 的 CUDA 基础镜像，建议预留 30 GB 磁盘空间。
+- 使用真实显卡时，已安装 NVIDIA 显卡驱动。
+
+## 部署
+
+在 PowerShell 中执行：
 
 ```powershell
-cd D:\Projects\lab-cluster-system
+git clone https://github.com/Wangzhaoze/lab-cluster-system.git
+cd lab-cluster-system
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 .\scripts\bootstrap.ps1
-.\scripts\up.ps1
+.\scripts\up.ps1 -Remote
 ```
 
-访问 **http://localhost:8080**。管理员用户名 `admin`，首次生成的密码在本地 `.env` 的 `INITIAL_ADMIN_PASSWORD` 中。不会把密码打印到日志或提交到 Git。初始管理员只创建一次；修改 `.env` 不会重置已有账号的密码。
+- `Set-ExecutionPolicy` 只对当前 PowerShell 窗口生效，每次新开窗口运行脚本前执行一次。
+- `bootstrap.ps1` 生成 `.env`（含随机管理员密码），并准备基础镜像，本机没有时自动下载。
+- `up.ps1 -Remote` 构建并启动全部服务和公网隧道，结束时打印访问链接。
+- 要把本机的数据集目录只读提供给所有成员（容器内路径 `/datasets`），把第四行改为 `.\scripts\bootstrap.ps1 -DatasetPath 'D:\你的数据集目录'`。
 
-本机无需安装 Python、Node 或数据库。首次构建会下载 apt/pip/npm 软件包及 code-server/Traefik 二进制，**不拉取新的基础镜像**。使用指定的 `sha256:17e2934e1fa96152b14f78078bfbafd0f00f391df995dc6c641a720fce1202bb`，前端构建工具复用本机已有 `radarannotationtoolkit-web` 镜像。
+## 获取访问链接
 
-测试外部 D 盘数据集：
+`up.ps1 -Remote` 结束时输出：
 
-```powershell
-.\scripts\bootstrap.ps1 -DatasetPath 'D:\Datasets\RaDIaL\Ready_to_use'
-.\scripts\up.ps1 -NoBuild
+```
+Portal: http://localhost:8080
+Remote portal: https://<随机字符>.trycloudflare.com
 ```
 
-所有新建用户容器将它挂载到 `/datasets`，只读共享。更换路径后需重新创建已有 Workspace / Debug / Training 容器。默认不传路径则使用 `runtime/datasets/demo/hello.txt`。
-
-自动验收：
+`Remote portal` 是其他网络可以打开的链接，`Portal` 只能在这台电脑上打开。如果提示 `Tunnel is still connecting`，稍等几秒后查看。随时查看当前链接：
 
 ```powershell
-.\scripts\acceptance-test.ps1
+.\scripts\remote-access.ps1
 ```
 
-验收要求 mock 模式且没有其他活跃任务，会创建独立测试账号、验证持久化环境/权限/排队/日志/结果/重启恢复/TTL，然后停止测试工作区并停用测试账号。测试数据和报告保留在 `runtime/`，不会修改其他账号的文件。
+链接是随机的，隧道每次重启（包括重启电脑或 Docker Desktop）都会更换，需要重新查看并发给使用者。这台电脑和 Docker Desktop 必须保持运行。
 
-真实 GPU 测试：
+## 获取密码
+
+**管理员**：用户名 `admin`。密码在首次执行 `bootstrap.ps1` 时随机生成，保存在 `.env` 中。查看：
 
 ```powershell
-.\scripts\gpu-test.ps1
+(Get-Content .env) -match '^INITIAL_ADMIN_PASSWORD=' -replace '^[^=]+='
+```
+
+这个密码只在第一次启动时写入数据库。之后在 Portal 里改过密码的话，以改后的为准。
+
+**成员**：用管理员登录 Portal，然后：
+
+1. 点击「用户管理」，填写用户名和显示名称。
+2. 点击「生成随机密码」，再点击「创建用户」。
+3. 在出现的信息卡上点击「复制登录信息」，把内容发给成员。其中包含当前公网链接、用户名和密码。
+
+信息卡关闭后密码不再显示。成员忘记密码时，在成员列表点击「重置密码」。
+
+## 使用真实显卡
+
+部署后默认是模拟 GPU，Portal 顶部显示 `MOCK GPU MODE`，任务拿不到显卡。切换到真实显卡：
+
+```powershell
 .\scripts\set-scheduler.ps1 -Mode local-gpu-docker
-.\scripts\acceptance-test.ps1 -Gpu
-.\scripts\set-scheduler.ps1 -Mode mock-docker
 ```
 
-切换前须结束所有训练和调试任务。本机 RTX 3060 对应 `LOCAL_GPU_COUNT=1`；mock 默认 5 个虚拟 GPU，执行真实 Docker 任务但不透传 GPU。Workspace 永远只使用 CPU。基础镜像包含 nvcc 12.8 编译器，尚未安装 PyTorch；GPU 验收使用 CUDA API 或编译 CUDA 内核，避免额外下载 PyTorch。
+显卡数量不是 1 时，先把 `.env` 里的 `LOCAL_GPU_COUNT` 改成实际数量。切换前需要结束所有训练和调试任务。
 
-日常操作：
+## 停止与再次启动
 
 ```powershell
-.\scripts\up.ps1 -NoBuild          # 已构建后快速启动
-.\scripts\logs.ps1                 # 查看后端/调度器/路由日志
-.\scripts\down.ps1                 # 停服务，保留数据库、文件与 Python volume
-.\scripts\remote-access.ps1 -Action Start  # 启动公网 Quick Tunnel，不重复构建
-.\scripts\remote-access.ps1                # 查看当前公网地址及健康状态
-.\scripts\remote-access.ps1 -Action Stop   # 仅关闭公网入口
+.\scripts\down.ps1                  # 停止全部服务；账号、文件和 Python 环境保留
+.\scripts\up.ps1 -Remote -NoBuild   # 再次启动，会得到一个新的公网链接
 ```
-
-`down.ps1` 也停止本项目动态容器；运行中的训练在下次启动时按容器退出状态收尾。需要完整清空开发数据时才使用 `reset-dev.ps1`，默认要求输入 `RESET`。该脚本只清除本项目 runtime 和带本项目标签的资源，不删除外部数据集。
-
-详细的浏览器手动测试见 [docs/WINDOWS_POC.md](docs/WINDOWS_POC.md)，架构和差异见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/IMPLEMENTATION_NOTES.md](docs/IMPLEMENTATION_NOTES.md)。
-
-本机测试结果见 [docs/VALIDATION.md](docs/VALIDATION.md)。
-
-跨网络登录、分配成员账号、VS Code 点击步骤与真实 GPU 切换见 [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)。新账号创建后可以直接复制登录信息；成员可在「我的账号」修改初始密码。
