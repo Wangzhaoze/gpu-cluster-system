@@ -1006,3 +1006,13 @@ button.danger {
 button.danger:disabled {
   opacity: 0.45;
 }
+
+.host-path {
+  display: block;
+  overflow-wrap: anywhere;
+  min-width: 200px;
+}
+.workspace-import {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -26,16 +26,23 @@ class DockerStorage:
         for relative in self.paths(username).values():
             Path(settings.runtime_root, relative).mkdir(parents=True, exist_ok=True)
 
-    def mounts(self, username: str) -> list[Mount]:
+    def host_paths(self, username: str) -> dict[str, str]:
         root = settings.host_root.rstrip("/")
+        return {
+            **{kind: f"{root}/{relative}" for kind, relative in self.paths(username).items()},
+            "datasets": settings.dataset_host_path,
+        }
+
+    def mounts(self, username: str) -> list[Mount]:
+        paths = self.host_paths(username)
         mounts = [
-            Mount(f"/{target}", f"{root}/{relative}", type="bind")
-            for target, relative in self.paths(username).items()
+            Mount(f"/{target}", paths[target], type="bind")
+            for target in self.paths(username)
         ]
         mounts.extend(
             [
                 Mount(
-                    "/datasets", settings.dataset_host_path, type="bind", read_only=True
+                    "/datasets", paths["datasets"], type="bind", read_only=True
                 ),
                 Mount("/opt/user-env", f"lab_pyenv_{username}", type="volume"),
             ]

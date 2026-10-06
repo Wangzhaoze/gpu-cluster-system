@@ -75,6 +75,10 @@ export interface Slot {
   } | null;
 }
 export interface Workspace {
+  host_paths: Record<"workspace" | "results" | "scratch" | "datasets", string>;
+  host_uid: number;
+  host_gid: number;
+  host_import_command: string;
   state: string;
   route_path: string;
   container_id: string | null;

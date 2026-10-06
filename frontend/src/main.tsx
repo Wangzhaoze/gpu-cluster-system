@@ -231,6 +231,14 @@ function App() {
     password: string;
     url: string;
   } | null>(null);
+  async function copyWorkspaceText(value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setNotice("已复制");
+    } catch {
+      setError("复制失败，请选中页面上的路径或命令手动复制");
+    }
+  }
   function endSession(message = "") {
     setUser(null);
     setPage("dashboard");
@@ -807,6 +815,46 @@ function App() {
                     <button className="danger" disabled={busy}
                       onClick={() => deleteResource("/workspace", "删除自己的工作区文件、Python 环境和缓存；保留训练结果和任务记录。必须先停止所有调试和训练。")}>删除工作区</button>
                   )}
+                </div>
+              </section>
+              <section className="panel">
+                <div className="panel-head">
+                  <h2>宿主机文件位置</h2>
+                  <span className="muted">Ubuntu · UID {workspace.host_uid} / GID {workspace.host_gid}</span>
+                </div>
+                <p className="muted">
+                  宿主机目录与 Web 工作区使用同一份文件。放入、修改或保存文件后，双方立即可见，无需上传或重新启动工作区。
+                  这些路径位于运行集群的 Ubuntu 宿主机上。
+                </p>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>用途</th><th>Web / 容器目录</th><th>宿主机绝对路径</th><th /></tr></thead>
+                    <tbody>
+                      {([
+                        ["workspace", "工作目录 · 读写"],
+                        ["results", "训练结果 · 读写"],
+                        ["scratch", "缓存 · 读写"],
+                        ["datasets", "共享数据集 · 只读"],
+                      ] as const).map(([kind, label]) => (
+                        <tr key={kind}>
+                          <td>{label}</td>
+                          <td><code>/{kind}</code></td>
+                          <td><code className="host-path">{workspace.host_paths[kind]}</code></td>
+                          <td><button onClick={() => copyWorkspaceText(workspace.host_paths[kind])}>复制路径</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <h3>从宿主机导入项目</h3>
+                <p className="muted">
+                  在宿主机终端把下面的 /path/to/project/ 替换成项目源目录后执行。命令会把文件复制到工作区的 project 子目录，
+                  并设置为你的工作区用户所有，确保 Web 中可以继续编辑。已在使用的文件请先保存；如文件树尚未更新，点击 VS Code 资源管理器的刷新按钮。
+                </p>
+                <pre className="workspace-import">{workspace.host_import_command}</pre>
+                <div className="actions">
+                  <button onClick={() => copyWorkspaceText(workspace.host_import_command)}>复制导入命令</button>
+                  <span className="muted">导入后在 VS Code 中打开 /workspace/project，再新建终端继续开发。</span>
                 </div>
               </section>
               <section className="panel">

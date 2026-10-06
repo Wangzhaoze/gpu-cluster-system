@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import re
 import secrets
+import shlex
 import threading
 import time
 import unicodedata
@@ -563,7 +564,13 @@ def workspace_payload(db: Session, target: User):
     )
     workspace.container_id = container.id if container else None
     db.commit()
+    host_paths = storage.host_paths(target.username)
+    import_destination = shlex.quote(host_paths["workspace"] + "/project/")
     return {
+        "host_paths": host_paths,
+        "host_uid": target.uid_hint,
+        "host_gid": target.uid_hint,
+        "host_import_command": f"sudo rsync -a --chown={target.uid_hint}:{target.uid_hint} -- /path/to/project/ {import_destination}",
         "state": workspace.state,
         "route_path": workspace.route_path,
         "container_id": workspace.container_id,

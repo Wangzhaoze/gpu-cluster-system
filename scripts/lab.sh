@@ -12,6 +12,7 @@ Usage: ./scripts/lab.sh COMMAND [OPTIONS]
   status                         Show Compose service status
   logs [SERVICE]                 Follow service logs
   test [--gpu]                   Run backend and application acceptance tests
+  workspace-test [--public]     Verify host paths, editable imports and PyTorch
   gpu-test                       Check NVIDIA GPU passthrough through Docker
   torch-image                    Pull PyTorch/CUDA/nvcc and build its lab image
   torch-test                     Compile a CUDA kernel and test PyTorch on GPUs
@@ -137,6 +138,17 @@ case "$command" in
         [[ $# == 0 || ( $# == 1 && $1 == --gpu ) ]] || { usage >&2; exit 2; }
         lab_docker compose exec -T backend python3 -m pytest -q
         lab_docker compose run --rm --no-deps -T --entrypoint python3 backend integration/acceptance.py "$@"
+        ;;
+    workspace-test)
+        [[ $# == 0 || ( $# == 1 && $1 == --public ) ]] || { usage >&2; exit 2; }
+        workspace_args=()
+        if [[ $# == 1 ]]; then
+            url=$(remote_url)
+            [[ -n "$url" ]] || { echo 'No public tunnel URL is available.' >&2; exit 1; }
+            workspace_args+=(--url "$url")
+        fi
+        lab_docker compose run --rm --no-deps -T --entrypoint python3 backend \
+            -m integration.workspace_paths "${workspace_args[@]}"
         ;;
     gpu-test)
         lab_docker run --rm --pull never --gpus all --entrypoint nvidia-smi \

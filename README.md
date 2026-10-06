@@ -88,3 +88,15 @@ python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda
 ```
 
 See [public access and student instructions](docs/REMOTE_ACCESS.md), [Ubuntu deployment details](docs/UBUNTU_MIGRATION.md), and [verification results](docs/UBUNTU_VALIDATION.md).
+
+## Host workspace files
+
+Every signed-in user can find their own absolute Ubuntu host paths under **工作区 → 宿主机文件位置**, even while their workspace is stopped. The page includes copy buttons, container path mappings, the user's numeric UID/GID and an ownership-preserving import command. The workspace API keeps the same member/admin access rules.
+
+The directory shown beside `/workspace` is a live Docker bind mount: edits on the host and in Web VS Code affect the same files. On the Ubuntu host, replace `/path/to/project/` in the displayed `sudo rsync -a --chown=UID:GID` command with the source project directory. It copies into the user's `project` subfolder and gives the workspace user permission to continue editing. It does not delete existing files. Open `/workspace/project` in VS Code and create a terminal; Python continues to use `/opt/user-env/venv/bin/python`. Refresh the Explorer if new files have not appeared yet. Save open files before modifying them from the host.
+
+`/results` and `/scratch` are also persistent host directories. `/datasets` is shared and mounted read-only inside user containers. Copy files into the workspace rather than changing permissions on other users' directories.
+
+The deployed checkout is `/home/local/gpu-cluster-system`; its private `.env` points to `/home/local/gpu-cluster-system/runtime`. Both are ignored by Git. Manage the deployment from this checkout with `./scripts/lab.sh up --remote`, `status` and `remote-url`. Retain the `gpu-lab-poc` Compose project, `gpu-lab-poc_postgres-data` database volume and `lab_pyenv_*` Python volumes. A runtime migration must pause workspace writers and backend/worker before copying data with numeric ownership, then recreate running workspaces with the new bind paths. Keep an existing Quick Tunnel running during application migration to retain its public link; restarting the Quick Tunnel creates a new link.
+
+Run `./scripts/lab.sh workspace-test --public` from the deployed checkout to verify the host paths, file ownership, public editor access, PyTorch, project-folder training and stop/start persistence. The test uses two disposable members and a short-lived local maintenance session, then removes them; it retains existing account passwords and files. Docker access is required.
