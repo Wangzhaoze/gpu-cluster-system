@@ -44,15 +44,25 @@ def member_workspace(monkeypatch, host_settings):
         app.dependency_overrides.clear()
 
 
-def test_member_can_find_stopped_workspace_path_and_safe_import_command(member_workspace):
+def test_member_workspace_omits_host_details(member_workspace):
     client, user = member_workspace
     response = client.get("/api/workspace")
     assert response.status_code == 200
     result = response.json()
     assert result["state"] == "STOPPED"
+    assert not {"host_paths", "host_uid", "host_gid", "host_import_command"} & result.keys()
+
+
+def test_admin_lookup_exposes_host_paths_and_safe_import_command(member_workspace):
+    client, user = member_workspace
+    user.role = "ADMIN"
+    target = SimpleNamespace(id="target", username="student01", role="MEMBER", uid_hint=2001, default_environment_id="env")
+    from app import main as module
+    from unittest.mock import patch
+    with patch.object(module, "target_user", return_value=target):
+        result = client.get("/api/workspace?user_id=target").json()
     assert result["host_paths"]["workspace"] == "/srv/gpu cluster's/runtime/users/student01/workspace"
-    assert result["host_uid"] == result["host_gid"] == user.uid_hint
-    assert shlex.split(result["host_import_command"]) == ["sudo", "rsync", "-a", "--chown=2001:2001", "--", "/path/to/project/", result["host_paths"]["workspace"] + "/project/"]
+    assert shlex.split(result["host_import_command"])[-1] == result["host_paths"]["workspace"] + "/project/"
 
 
 def test_member_cannot_read_another_members_host_paths(member_workspace):

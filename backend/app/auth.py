@@ -41,3 +41,9 @@ def admin_user(user: User = Depends(current_user)) -> User:
     if user.role != "ADMIN":
         raise HTTPException(403, "需要管理员权限")
     return user
+
+
+def member_user(user: User = Depends(current_user)) -> User:
+    if user.role != "MEMBER":
+        raise HTTPException(403, "管理员仅管理任务；请使用成员账号提交")
+    return user

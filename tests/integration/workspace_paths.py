@@ -57,7 +57,9 @@ try:
         users.append(call(admin, "POST", "/users", {"username": "path_" + secrets.token_hex(4), "display_name": "Host path acceptance", "password": password, "max_gpus": 1, "default_environment_id": template["id"]}, 201))
     owner, other = users
     call(member, "POST", "/auth/login", {"username": owner["username"], "password": password})
-    stopped = call(member, "GET", "/workspace")
+    member_stopped = call(member, "GET", "/workspace")
+    assert "host_paths" not in member_stopped
+    stopped = call(admin, "GET", "/workspace?user_id=" + owner["id"])
     assert stopped["state"] == "STOPPED"
     host = stopped["host_paths"]["workspace"]
     assert host == os.environ["LAB_HOST_ROOT"] + "/users/" + owner["username"] + "/workspace"
@@ -66,7 +68,8 @@ try:
     assert call(admin, "GET", "/workspace?user_id=" + owner["id"])["host_paths"] == stopped["host_paths"]
     passed("own host paths before startup, admin lookup and cross-user/anonymous denial")
 
-    workspace = call(member, "POST", "/workspace/start")
+    call(member, "POST", "/workspace/start")
+    workspace = call(admin, "GET", "/workspace?user_id=" + owner["id"])
     for _ in range(75):
         if member.get(workspace["route_path"]).status_code == 200:
             break
@@ -112,7 +115,8 @@ try:
     passed("training continues inside imported project folder with persistent Python environment")
     call(member, "POST", "/workspace/stop")
     assert script.exists()
-    restarted = call(member, "POST", "/workspace/start")
+    call(member, "POST", "/workspace/start")
+    restarted = call(admin, "GET", "/workspace?user_id=" + owner["id"])
     assert restarted["host_paths"] == workspace["host_paths"]
     assert script.exists()
     passed("workspace stop/start retains project files and reports stable host paths")

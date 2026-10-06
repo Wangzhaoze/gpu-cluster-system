@@ -30,22 +30,27 @@ export interface Workload {
   username: string;
   user_id: string;
   status: string;
-  command: string;
+  can_manage: boolean;
+  command?: string;
+  requested_cpus?: number;
+  requested_ram_mb?: number;
+  workdir?: string;
+  output_name?: string;
   requested_gpus: number;
   requested_gpu_indices: number[] | null;
   time_limit_seconds: number;
-  approval_status: string;
-  approval_reason: string;
-  approval_note: string;
+  approval_status?: string;
+  approval_reason?: string;
+  approval_note?: string;
   assigned_gpus: number[];
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
   expires_at: string | null;
-  route_path: string | null;
-  exit_code: number | null;
-  error_message: string | null;
-  cancel_requested: boolean;
+  route_path?: string | null;
+  exit_code?: number | null;
+  error_message?: string | null;
+  cancel_requested?: boolean;
 }
 export interface Slot {
   gpu_index: number;
@@ -76,10 +81,10 @@ export interface Slot {
 }
 export interface ContainerWorkspace {
   mode: "container";
-  host_paths: Record<"workspace" | "results" | "scratch" | "datasets", string>;
-  host_uid: number;
-  host_gid: number;
-  host_import_command: string;
+  host_paths?: Record<"workspace" | "results" | "scratch" | "datasets", string>;
+  host_uid?: number;
+  host_gid?: number;
+  host_import_command?: string;
   state: string;
   route_path: string;
   container_id: string | null;
@@ -116,6 +121,8 @@ export interface Variable {
 }
 export interface Storage {
   username: string;
+  role?: "ADMIN" | "MEMBER";
+  workspace_host_path?: string | null;
   bytes: Record<string, number>;
 }
 export interface Audit {

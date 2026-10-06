@@ -11,6 +11,7 @@ Usage: ./scripts/lab.sh COMMAND [OPTIONS]
   down                           Stop this project's containers, retaining data
   host-editor ACTION             Install/start/stop/status native admin editor
   host-test                      Verify public native host editor permissions
+  portal-test                    Verify role summaries, variables and task edits
   status                         Show Compose service status
   logs [SERVICE]                 Follow service logs
   test [--gpu]                   Run backend and application acceptance tests
@@ -144,6 +145,13 @@ case "$command" in
         [[ $# == 0 || ( $# == 1 && $1 == --gpu ) ]] || { usage >&2; exit 2; }
         lab_docker compose exec -T backend python3 -m pytest -q
         lab_docker compose run --rm --no-deps -T --entrypoint python3 backend integration/acceptance.py "$@"
+        ;;
+    portal-test)
+        [[ $# == 0 ]] || { usage >&2; exit 2; }
+        url=$(remote_url)
+        [[ -n "$url" ]] || { echo 'No public tunnel URL is available.' >&2; exit 1; }
+        lab_docker compose run --rm --no-deps -T --entrypoint python3 backend \
+            -m integration.role_portals --url "$url"
         ;;
     host-test)
         [[ $# == 0 ]] || { usage >&2; exit 2; }

@@ -102,7 +102,7 @@ def main():
         assert host["host_user"] == "local" and host["host_uid"] == 1000 and host["host_home"] == "/home/local"
         assert host["host_python"] == "/home/local/miniconda3/envs/dl/bin/python"
         student = member.get("/api/workspace").json()
-        assert student["mode"] == "container" and "host_paths" in student and "host_home" not in student
+        assert student["mode"] == "container" and "host_paths" not in student and "host_home" not in student
         assert guest.get("/api/workspace").status_code == 401
         passed("unchanged public tunnel; admin native metadata and member container contract")
         assert admin.get("/api/auth/host-editor").status_code == 204

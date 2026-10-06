@@ -14,6 +14,8 @@ import type {
   DockerImage,
 } from "./types";
 import "./styles.css";
+import { HelpPage } from "./HelpPage";
+import { WorkloadEditor } from "./WorkloadEditor";
 
 class ApiError extends Error {
   constructor(
@@ -122,6 +124,7 @@ function Icon({ name }: { name: string }) {
     audit: "M5 3h14v18H5z M8 7h8 M8 11h8 M8 15h5",
     remote:
       "M2 12a10 10 0 1020 0 10 10 0 00-20 0 M2 12h20 M12 2a20 20 0 010 20 20 20 0 010-20",
+    help: "M4 3h16v18H4z M8 7h8 M8 11h8 M8 15h5",
     account: "M12 13a4 4 0 100-8 4 4 0 000 8z M4 22v-2a8 8 0 0116 0v2",
   };
   return (
@@ -189,7 +192,7 @@ function GpuPicker({ slots, max, initial }: { slots: Slot[]; max: number; initia
       <span>GPU {s.gpu_index} · {s.state !== "FREE" ? "平台占用" : s.external_busy ? "外部占用" : "空闲"}
         <small>{metric(s.metrics?.utilization_percent, "%")} · {metric(s.metrics?.temperature_c, "°C")}</small></span>
     </label>)}</div>}
-    {mode === "manual" && <p className="muted">最多 {max} 张；指定显卡被占用时等待该卡释放，不会改用其他显卡。</p>}
+
   </div>;
 }
 
@@ -226,6 +229,8 @@ function App() {
   const [logTarget, setLogTarget] = useState<Workload | null>(null),
     [log, setLog] = useState(""),
     [editing, setEditing] = useState<User | null>(null);
+  const [editingVariable, setEditingVariable] = useState<Variable | null>(null);
+  const [workloadEditing, setWorkloadEditing] = useState<Workload | null>(null);
   const [invitation, setInvitation] = useState<{
     username: string;
     password: string;
@@ -245,6 +250,10 @@ function App() {
     setInvitation(null);
     setEditing(null);
     setLogTarget(null);
+    setEditingVariable(null);
+    setWorkloadEditing(null);
+    setVariables([]);
+    setScope("global");
     setShowLoginPassword(false);
     setError("");
     setConnectionError("");
@@ -258,7 +267,7 @@ function App() {
   }, []);
   const refresh = useCallback(async () => {
     if (!user) return;
-    const [r, w, j, d, q, e, t] = await Promise.all([
+    const [r, w, j, d, q, e, t, v] = await Promise.all([
       api<typeof resources>("/resources/gpus"),
       api<Workspace>("/workspace"),
       api<Workload[]>("/jobs"),
@@ -266,6 +275,7 @@ function App() {
       api<QueueItem[]>("/resources/queue"),
       api<Environment[]>("/environments"),
       api<Remote>("/system/remote-access"),
+      api<Variable[]>("/settings/env" + (user.role === "ADMIN" && scope !== "global" ? "?user_id=" + scope : "")),
     ]);
     setResources(r);
     setWorkspace(w);
@@ -274,6 +284,7 @@ function App() {
     setQueue(q);
     setEnvironments(e);
     setRemote(t);
+    setVariables(v);
     if (user.role === "ADMIN") {
       const [u, s, a, i] = await Promise.all([
         api<User[]>("/users"),
@@ -288,7 +299,7 @@ function App() {
     } else {
       setStorage([await api<Storage>("/storage")]);
     }
-  }, [user]);
+  }, [user, scope]);
   useEffect(() => {
     if (!user) return;
     const load = () =>
@@ -304,13 +315,9 @@ function App() {
     return () => clearInterval(timer);
   }, [refresh, user]);
   useEffect(() => {
-    if (user)
-      api<Variable[]>(
-        "/settings/env" + (scope === "global" ? "" : "?user_id=" + scope),
-      )
-        .then(setVariables)
-        .catch((e) => setConnectionError(e.message));
-  }, [scope, user, page]);
+    document.documentElement.dataset.role = user?.role || "";
+    return () => { delete document.documentElement.dataset.role; };
+  }, [user?.role]);
   useEffect(() => {
     if (!logTarget) return;
     const load = () =>
@@ -392,6 +399,7 @@ function App() {
       : []),
     ["remote", "远程访问"],
     ["account", "我的账号"],
+    ["help", "帮助"],
   ];
   if (loading) return <div className="loading">正在连接 GPU Lab…</div>;
   if (!user)
@@ -560,21 +568,9 @@ function App() {
             <div>
               <span className="eyebrow">GPU LAB / {page.toUpperCase()}</span>
               <h1>{nav.find((n) => n[0] === page)?.[1]}</h1>
-              <p className="muted">
-                {page === "dashboard"
-                  ? "算力、任务和工作区，尽在这里。"
-                  : page === "workspace"
-                    ? (user.role === "ADMIN" ? "直接连接 Ubuntu，管理宿主机文件和 Docker。" : "持续保存你的代码和 Python 环境。")
-                    : page === "jobs"
-                      ? "提交实验，由调度器分配资源并保留运行日志。"
-                      : page === "debug"
-                        ? "按需开启带 GPU 的浏览器调试会话。"
-                        : page === "environment"
-                          ? "固定镜像版本，复用同一个 Python 环境。"
-                          : "管理你的实验室资源。"}
-              </p>
+
             </div>
-            {page === "dashboard" && (
+            {page === "dashboard" && user.role === "MEMBER" && (
               <button className="primary" onClick={() => setPage("jobs")}>
                 ＋ 新建训练
               </button>
@@ -735,7 +731,7 @@ function App() {
                       }
                     >
                       {workspace?.state === "RUNNING"
-                        ? (workspace.mode === "host" ? "打开宿主机 VS Code ↗" : "打开 VS Code ↗")
+                        ? (workspace.mode === "host" ? "远程 vscode ↗" : "打开 VS Code ↗")
                         : (workspace?.mode === "host" ? "宿主机服务未运行" : "启动工作区")}
                     </button>
                     <button onClick={() => setPage("workspace")}>
@@ -753,20 +749,9 @@ function App() {
                 VS Code 原生运行在宿主机，终端使用本机 {workspace.host_user} 用户，可直接管理宿主机文件和 Docker。
                 系统级操作使用 sudo，并输入宿主机用户密码。所有管理员账号连接同一个宿主机环境。
               </p>
-              <div className="detail-grid">
-                <div><span>Linux 用户</span><strong>{workspace.host_user} · UID {workspace.host_uid}</strong></div>
-                <div><span>默认打开目录</span><code>{workspace.host_home}</code><small>可在 VS Code 中打开其他宿主机目录</small></div>
-                <div><span>宿主机 Python</span><code>{workspace.host_python}</code><small>终端默认启用本机 Python / PyTorch 环境</small></div>
+              <div className="actions">
+                {workspace.state === "RUNNING" ? <a className="button primary" href={workspace.route_path} target="_blank" rel="noreferrer">远程 vscode ↗</a> : <span className="muted">{workspace.error_message}</span>}
               </div>
-              {workspace.state === "RUNNING" ? (
-                <div className="actions">
-                  <a className="button primary" href={workspace.route_path} target="_blank" rel="noreferrer">打开宿主机 VS Code ↗</a>
-                  <a className="button" href={workspace.route_path + "?folder=" + encodeURIComponent("/home/local/gpu-cluster-system")} target="_blank" rel="noreferrer">打开集群项目 ↗</a>
-                </div>
-              ) : <p className="muted">{workspace.error_message}。在宿主机执行 ./scripts/host-editor.sh install 启用服务。</p>}
-              <h3>在宿主机终端操作</h3>
-              <p className="muted">打开 VS Code 后选择 Terminal → New Terminal。宿主机终端可以直接使用本机资源。</p>
-              <pre>{'pwd\nid\ndocker ps\nnvidia-smi\npython -c "import torch; print(torch.__version__, torch.cuda.is_available())"\nsudo systemctl status docker'}</pre>
             </section>
           )}
           {page === "workspace" && workspace?.mode === "container" && (
@@ -789,7 +774,7 @@ function App() {
                   <div>
                     <span>算力</span>
                     <strong>CPU · 2 核 / 2 GB</strong>
-                    <small>GPU 由 Debug 或 Training 分配</small>
+                    <small>需要 GPU 时使用在线调试或训练任务</small>
                   </div>
                 </div>
                 <div className="actions">
@@ -840,80 +825,11 @@ function App() {
                   )}
                 </div>
               </section>
-              <section className="panel">
-                <div className="panel-head">
-                  <h2>宿主机文件位置</h2>
-                  <span className="muted">Ubuntu · UID {workspace.host_uid} / GID {workspace.host_gid}</span>
-                </div>
-                <p className="muted">
-                  宿主机目录与 Web 工作区使用同一份文件。放入、修改或保存文件后，双方立即可见，无需上传或重新启动工作区。
-                  这些路径位于运行集群的 Ubuntu 宿主机上。
-                </p>
-                <div className="table-wrap">
-                  <table>
-                    <thead><tr><th>用途</th><th>Web / 容器目录</th><th>宿主机绝对路径</th><th /></tr></thead>
-                    <tbody>
-                      {([
-                        ["workspace", "工作目录 · 读写"],
-                        ["results", "训练结果 · 读写"],
-                        ["scratch", "缓存 · 读写"],
-                        ["datasets", "共享数据集 · 只读"],
-                      ] as const).map(([kind, label]) => (
-                        <tr key={kind}>
-                          <td>{label}</td>
-                          <td><code>/{kind}</code></td>
-                          <td><code className="host-path">{workspace.host_paths[kind]}</code></td>
-                          <td><button onClick={() => copyWorkspaceText(workspace.host_paths[kind])}>复制路径</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <h3>从宿主机导入项目</h3>
-                <p className="muted">
-                  在宿主机终端把下面的 /path/to/project/ 替换成项目源目录后执行。命令会把文件复制到工作区的 project 子目录，
-                  并设置为你的工作区用户所有，确保 Web 中可以继续编辑。已在使用的文件请先保存；如文件树尚未更新，点击 VS Code 资源管理器的刷新按钮。
-                </p>
-                <pre className="workspace-import">{workspace.host_import_command}</pre>
-                <div className="actions">
-                  <button onClick={() => copyWorkspaceText(workspace.host_import_command)}>复制导入命令</button>
-                  <span className="muted">导入后在 VS Code 中打开 /workspace/project，再新建终端继续开发。</span>
-                </div>
-              </section>
-              <section className="panel">
-                <h2>开始你的实验</h2>
-                <p className="muted">
-                  点击「启动」，等待运行中后打开 VS Code。在菜单中选择 Terminal
-                  → New Terminal。 首次打开时，请自行确认工作目录可信，再选择
-                  Trust Folder & Continue。
-                </p>
-                <div className="detail-grid">
-                  <div>
-                    <span>编写代码</span>
-                    <code>/workspace</code>
-                    <small>工作目录，持续保存</small>
-                  </div>
-                  <div>
-                    <span>读取数据</span>
-                    <code>/datasets</code>
-                    <small>共享数据集，只读</small>
-                  </div>
-                  <div>
-                    <span>保存输出</span>
-                    <code>/results</code>
-                    <small>训练结果，持续保存</small>
-                  </div>
-                </div>
-                <pre>
-                  python -c "import sys; print(sys.executable)"{"\n"}pip install
-                  rich{"\n"}python -c "import rich; print('PERSIST_OK')"
-                </pre>
-              </section>
             </>
           )}
           {page === "jobs" && (
             <>
-              <section className="panel">
+              {user.role === "MEMBER" && <section className="panel">
                 <h2>新建训练任务</h2>
                 <form
                   onSubmit={(e) =>
@@ -1017,15 +933,13 @@ function App() {
                     />
                   </Field>
                   <div className="form-foot">
-                    <span className="muted">
-                      输出目录通过 $LAB_RESULT_DIR 提供。
-                    </span>
+
                     <button className="primary" disabled={busy}>
                       提交训练 →
                     </button>
                   </div>
                 </form>
-              </section>
+              </section>}
               <section className="panel">
                 <div className="panel-head">
                   <h2>训练记录</h2>
@@ -1049,9 +963,7 @@ function App() {
                         <tr key={j.id}>
                           <td>
                             <strong className="mono">{j.id.slice(0, 8)}</strong>
-                            <small className="truncate" title={j.command}>
-                              {j.command}
-                            </small>
+                            {j.can_manage && <small className="truncate" title={j.command}>{j.command}</small>}
                             {j.error_message && (
                               <small className="text-error">
                                 {j.error_message}
@@ -1075,6 +987,7 @@ function App() {
                           <td>{j.exit_code ?? "—"}</td>
                           <td>
                             <div className="actions compact">
+                              {j.can_manage && <>
                               <button
                                 onClick={() => {
                                   setLog("加载日志…");
@@ -1083,40 +996,15 @@ function App() {
                               >
                                 日志
                               </button>
-                              {terminal.includes(j.status) ? (
-                                <button
-                                  disabled={busy}
-                                  onClick={() =>
-                                    act(
-                                      () =>
-                                        api("/jobs/" + j.id + "/retry", "POST"),
-                                      "已创建重试任务",
-                                    )
-                                  }
-                                >
-                                  重试
-                                </button>
-                              ) : (
-                                <button
-                                  disabled={busy}
-                                  onClick={() =>
-                                    act(
-                                      () =>
-                                        api(
-                                          "/jobs/" + j.id + "/cancel",
-                                          "POST",
-                                        ),
-                                      "已请求取消",
-                                    )
-                                  }
-                                >
-                                  取消
-                                </button>
-                              )}
+                              {user.role === "MEMBER" && terminal.includes(j.status) && <button disabled={busy} onClick={() => act(() => api("/jobs/" + j.id + "/retry", "POST"), "已创建重试任务")}>重试</button>}
+                              {!terminal.includes(j.status) && <button disabled={busy} onClick={() => act(() => api("/jobs/" + j.id + "/cancel", "POST"), "已请求取消")}>取消</button>}
+                              {user.role === "ADMIN" && ["PENDING", "RUNNING"].includes(j.status) && <button disabled={busy || j.cancel_requested} onClick={() => setWorkloadEditing(j)}>编辑</button>}
                               {user.role === "ADMIN" && terminal.includes(j.status) && (
                                 <button className="danger" disabled={busy}
                                   onClick={() => deleteResource("/jobs/" + j.id, "删除训练记录和日志；保留结果文件。")}>删除记录</button>
                               )}
+                              </>}
+                              {!j.can_manage && <span className="muted">公开摘要</span>}
                             </div>
                           </td>
                         </tr>
@@ -1130,7 +1018,7 @@ function App() {
           )}
           {page === "debug" && (
             <>
-              <section className="panel">
+              {user.role === "MEMBER" && <section className="panel">
                 <h2>新建调试会话</h2>
                 <form
                   onSubmit={(e) =>
@@ -1194,15 +1082,13 @@ function App() {
                     </Field>
                   </div>
                   <div className="form-foot">
-                    <span className="muted">
-                      免审批上限 {user.max_debug_hours} 小时；超过 10 小时需管理员审批。时长从容器启动计算，到期释放 GPU。
-                    </span>
+
                     <button className="primary" disabled={busy}>
                       {debugHours > 10 ? "提交审批申请 →" : "开启调试 →"}
                     </button>
                   </div>
                 </form>
-              </section>
+              </section>}
               <section className="panel">
                 <h2>调试会话 {user.role === "ADMIN" && debug.some((d) => d.status === "AWAITING_APPROVAL") &&
                   <span className="tag">待审批 {debug.filter((d) => d.status === "AWAITING_APPROVAL").length}</span>}</h2>
@@ -1247,7 +1133,7 @@ function App() {
                             if (note !== null) act(() => api("/debug/" + d.id + "/reject", "POST", {note}), "已拒绝申请");
                           }}>拒绝</button></>
                         )}
-                        {d.status === "RUNNING" && (
+                        {d.can_manage && d.status === "RUNNING" && (
                           <a
                             className="button"
                             href={d.route_path!}
@@ -1257,8 +1143,10 @@ function App() {
                             VS Code ↗
                           </a>
                         )}
-                        <button onClick={() => setLogTarget(d)}>日志</button>
-                        {!terminal.includes(d.status) && (
+                        {d.can_manage && <button onClick={() => setLogTarget(d)}>日志</button>}
+                        {user.role === "ADMIN" && ["PENDING", "AWAITING_APPROVAL", "RUNNING"].includes(d.status) && <button disabled={busy || d.cancel_requested} onClick={() => setWorkloadEditing(d)}>编辑</button>}
+                        {!d.can_manage && <span className="muted">公开摘要</span>}
+                        {d.can_manage && !terminal.includes(d.status) && (
                           <button
                             disabled={busy}
                             onClick={() =>
@@ -1335,8 +1223,8 @@ function App() {
                     >
                       复制登录信息
                     </button>
-                    <button onClick={() => setPage("remote")}>
-                      查看远程使用步骤
+                    <button onClick={() => setPage("help")}>
+                      查看帮助
                     </button>
                   </div>
                   {!remote.url && (
@@ -1350,13 +1238,7 @@ function App() {
                 <h2>
                   {editing ? "编辑 " + editing.username : "添加实验室成员"}
                 </h2>
-                {!editing && (
-                  <p className="muted">
-                    为每位成员创建独立账号。用户名为 3–32
-                    位小写字母、数字或下划线，以字母开头。一般选择「成员」，GPU
-                    上限填 1，Debug 免审批上限填 10 小时；超过 10 小时需单独申请审批。
-                  </p>
-                )}
+
                 <form
                   key={editing?.id || "new"}
                   onSubmit={(e) =>
@@ -1661,11 +1543,7 @@ function App() {
                     </div>
                   ))}
                 </div>
-                <p className="info">
-                  Python 包安装到 /opt/user-env/venv，在 Workspace、Debug 和
-                  Training 之间复用。系统 apt
-                  安装随容器删除而丢失。更换镜像前需确认 Python 兼容性。
-                </p>
+
                 {user.role === "ADMIN" && (
                   <form
                     onSubmit={(e) =>
@@ -1707,7 +1585,7 @@ function App() {
               {user.role === "ADMIN" && (
                 <section className="panel">
                   <h2>Docker 镜像</h2>
-                  <p className="muted">仅管理员可删除未使用的镜像。先删除无引用的环境模板；集群默认镜像和容器使用中的镜像受保护。</p>
+
                   <div className="table-wrap"><table>
                     <thead><tr><th>镜像 / 标签</th><th>大小</th><th>使用情况</th><th>操作</th></tr></thead>
                     <tbody>{images.map((image) => <tr key={image.id}>
@@ -1722,95 +1600,25 @@ function App() {
                 </section>
               )}
               <section className="panel">
-                <div className="panel-head">
-                  <h2>环境变量</h2>
-                  {user.role === "ADMIN" && (
-                    <select
-                      value={scope}
-                      onChange={(e) => setScope(e.target.value)}
-                    >
-                      <option value="global">全局</option>
-                      {users.map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.username}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                <div className="panel-head"><h2>环境变量</h2>
+                  {user.role === "ADMIN" && <select aria-label="变量作用范围" value={scope} onChange={e => { setScope(e.target.value); setEditingVariable(null); }}>
+                    <option value="global">所有成员（全局）</option>{users.filter(u => u.role === "MEMBER").map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
+                  </select>}
                 </div>
-                <p className="info">
-                  优先级：任务覆盖 &gt; 用户设置 &gt; 全局设置 &gt;
-                  默认值。修改仅对新创建的容器生效。
-                </p>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>变量</th>
-                      <th>值</th>
-                      <th>类型</th>
-                      <th>状态</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {variables.map((v) => (
-                      <tr key={v.scope + v.key}>
-                        <td className="mono">{v.key}</td>
-                        <td className="mono truncate">{v.value}</td>
-                        <td>{v.is_secret ? "Secret" : "普通"}</td>
-                        <td>{v.enabled ? "启用" : "停用"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <form
-                  onSubmit={(e) =>
-                    submit(
-                      e,
-                      async (f) => {
-                        await api("/settings/env", "PUT", {
-                          user_id:
-                            user.role === "ADMIN"
-                              ? scope === "global"
-                                ? null
-                                : scope
-                              : user.id,
-                          key: txt(f, "key"),
-                          value: txt(f, "value"),
-                          is_secret: f.get("secret") === "on",
-                          enabled: f.get("enabled") === "on",
-                        });
-                        setVariables(
-                          await api(
-                            "/settings/env" +
-                              (scope === "global" ? "" : "?user_id=" + scope),
-                          ),
-                        );
-                      },
-                      "变量已保存，对下次创建生效",
-                    )
-                  }
-                >
-                  <div className="form-grid">
-                    <Field label="变量名">
-                      <input name="key" required />
-                    </Field>
-                    <Field label="值">
-                      <input name="value" type="password" autoComplete="off" />
-                    </Field>
-                  </div>
-                  <div className="form-foot">
-                    <div className="checks">
-                      <label>
-                        <input type="checkbox" name="secret" />
-                        密钥
-                      </label>
-                      <label>
-                        <input type="checkbox" name="enabled" defaultChecked />
-                        启用
-                      </label>
-                    </div>
-                    <button disabled={busy}>保存变量</button>
-                  </div>
+                <div className="table-wrap"><table><thead><tr><th>变量</th><th>值</th><th>范围</th><th>操作</th></tr></thead><tbody>
+                  {variables.map(v => <tr key={v.scope + v.key}><td className="mono">{v.key}</td><td className="mono truncate" title={v.value}>{v.value}</td><td>{v.scope === "global" ? "全局" : "个人"}</td><td>
+                    {user.role === "ADMIN" || v.scope === user.id ? <div className="actions compact"><button disabled={busy} onClick={() => setEditingVariable(v)}>编辑</button>
+                      <button className="danger" disabled={busy} onClick={() => { if (window.confirm("删除变量 " + v.key + "？")) act(async () => { await api("/settings/env/" + encodeURIComponent(v.key) + (v.scope === "global" ? "" : "?user_id=" + v.scope), "DELETE"); setEditingVariable(null); }, "变量已删除"); }}>删除</button></div> : <span className="muted">管理员设置</span>}
+                  </td></tr>)}
+                </tbody></table>{!variables.length && <Empty text="尚未设置环境变量" />}</div>
+                <form key={(editingVariable?.scope || scope) + (editingVariable?.key || "new")} onSubmit={event => submit(event, async form => {
+                  const variableScope = editingVariable?.scope || (user.role === "ADMIN" ? scope : user.id);
+                  await api("/settings/env", "PUT", {user_id: variableScope === "global" ? null : variableScope, key: txt(form, "key"), value: txt(form, "value")});
+                  setEditingVariable(null);
+                }, "变量已保存，下次创建容器时生效", !editingVariable)}>
+                  <div className="form-grid"><Field label="变量名"><input name="key" pattern="[A-Za-z_][A-Za-z0-9_]*" defaultValue={editingVariable?.key || ""} readOnly={!!editingVariable} required /></Field>
+                    <Field label="值"><input name="value" autoComplete="off" defaultValue={editingVariable?.value || ""} /></Field></div>
+                  <div className="actions"><button className="primary" disabled={busy}>{editingVariable ? "更新变量" : "新增变量"}</button>{editingVariable && <button type="button" onClick={() => setEditingVariable(null)}>取消编辑</button>}</div>
                 </form>
               </section>
             </>
@@ -1818,10 +1626,7 @@ function App() {
           {page === "storage" && (
             <section className="panel">
               <h2>持久化存储</h2>
-              <p className="muted">
-                文件保存在宿主机；Python 环境独立保存在每个用户的 Docker volume
-                中。
-              </p>
+
               <table>
                 <thead>
                   <tr>
@@ -1829,6 +1634,7 @@ function App() {
                     <th>工作目录</th>
                     <th>结果</th>
                     <th>缓存</th>
+                    {user.role === "ADMIN" && <th>workspace 宿主机地址</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -1840,15 +1646,12 @@ function App() {
                       <td>{size(s.bytes.workspace || 0)}</td>
                       <td>{size(s.bytes.results || 0)}</td>
                       <td>{size(s.bytes.scratch || 0)}</td>
+                      {user.role === "ADMIN" && <td>{s.workspace_host_path ? <><code className="host-path">{s.workspace_host_path}</code><div className="actions compact"><button onClick={() => copyWorkspaceText(s.workspace_host_path!)}>复制地址</button><a className="button" href={"/host/?folder=" + encodeURIComponent(s.workspace_host_path)} target="_blank" rel="noreferrer">远程 vscode ↗</a></div></> : "—"}</td>}
                     </tr>
                   ))}
                 </tbody>
               </table>
-              <p className="info">
-                /datasets
-                在所有用户容器中共享并只读。当前不设置硬配额；此处统计工作目录、结果和缓存，不含
-                Python volume 大小。
-              </p>
+
             </section>
           )}
           {page === "audit" && (
@@ -1913,68 +1716,11 @@ function App() {
                     远程入口未启用。请联系管理员开启公网访问。
                   </p>
                 )}
-                <p className="info">
-                  {remote.status === "connecting"
-                    ? "隧道正在连接，稍后自动刷新。"
-                    : "在其他网络的设备上打开上面的 HTTPS 链接，使用同一个 Portal 账号登录。"}
-                  本机和 Docker
-                  需要保持运行。重启隧道会更换临时地址，届时请重新复制链接。
-                </p>
-              </section>
-              <section className="panel">
-                <h2>
-                  {user.role === "ADMIN"
-                    ? "管理员：分配一个远程账号"
-                    : "成员：开始使用"}
-                </h2>
-                {user.role === "ADMIN" && (
-                  <>
-                    <ol className="steps">
-                      <li>
-                        点击「用户管理」，填写用户名（例如
-                        student01）、显示名称和至少 12
-                        位初始密码。也可以点击「生成随机密码」。
-                      </li>
-                      <li>
-                        角色选「成员」，固定环境选择默认 PyTorch 环境，GPU 上限填 1，Debug
-                        免审批上限填 10，点击「创建用户」。
-                      </li>
-                      <li>
-                        在新账号信息卡中点击「复制登录信息」，将链接、成员用户名和初始密码交给对应成员。
-                      </li>
-                    </ol>
-                    <button onClick={() => setPage("users")}>
-                      前往用户管理
-                    </button>
-                  </>
-                )}
-                <ol className="steps">
-                  <li>
-                    在另一台设备打开公网链接并登录。首次登录后，点击「我的账号」修改初始密码，再用新密码登录。
-                  </li>
-                  <li>
-                    点击「工作区」→「启动」，等待「运行中」→「打开 VS Code」。在
-                    VS Code 中点击 Terminal → New Terminal，代码放在
-                    /workspace，数据从 /datasets 读取。
-                  </li>
-                  <li>
-                    需要交互式 GPU 时，点击「在线调试」→ 选择 1 GPU 和时长
-                    →「开启调试」，运行后点击「VS Code
-                    ↗」。使用结束点击「停止」。
-                  </li>
-                  <li>
-                    批量运行时，点击「训练任务」，填写运行命令和资源，点击「提交训练」。在任务列表查看状态和日志。
-                  </li>
-                </ol>
-                <p className="info">
-                  当前
-                  {resources.mode === "mock-docker"
-                    ? "为 mock 模式，GPU 数字用于测试排队，任务不会使用本机显卡。真实 GPU 可由管理员在本机切换到 local-gpu-docker。"
-                    : "为真实 GPU 模式；工作区使用 CPU，调试和训练可申请本机 GPU。"}
-                </p>
               </section>
             </>
           )}
+          {page === "help" && <HelpPage admin={user.role === "ADMIN"} />}
+
           {page === "account" && (
             <section className="panel account-panel">
               <div className="panel-head">
@@ -1992,13 +1738,10 @@ function App() {
                 </button>
               </div>
               <p className="muted">
-                {user.role === "ADMIN" ? "管理员" : "实验室成员"} · GPU 上限{" "}
-                {user.max_gpus} · Debug 免审批上限 {user.max_debug_hours} 小时；超过 10 小时可提交审批
+                {user.role === "ADMIN" ? "管理员" : `实验室成员 · GPU 上限 ${user.max_gpus} · 调试免审批上限 ${user.max_debug_hours} 小时`}
               </p>
               <h2>修改密码</h2>
-              <p className="muted">
-                修改后所有设备上的登录都会失效，工作区文件和运行中的任务继续保留。
-              </p>
+
               <form
                 onSubmit={async (event) => {
                   event.preventDefault();
@@ -2065,6 +1808,7 @@ function App() {
           </footer>
         </main>
       </div>
+      {workloadEditing && user.role === "ADMIN" && <WorkloadEditor item={workloadEditing} busy={busy} close={() => setWorkloadEditing(null)} save={data => act(async () => { await api("/" + (workloadEditing.kind === "debug" ? "debug" : "jobs") + "/" + workloadEditing.id, "PATCH", data); setWorkloadEditing(null); }, "任务已更新")} />}
       {logTarget && (
         <div className="modal-backdrop" onClick={() => setLogTarget(null)}>
           <section
