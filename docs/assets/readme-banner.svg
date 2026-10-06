@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title description">
+  <title id="title">GPU Lab — shared compute, personal workspaces</title>
+  <desc id="description">A dark blue banner with workspace, training and debug labels alongside an illustration of four GPU cards connected to a shared queue.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#081120"/>
+      <stop offset="1" stop-color="#122b43"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#818cf8"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#b8d9f0" stroke-opacity="0.045"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="360" rx="24" fill="url(#background)"/>
+  <rect width="1280" height="360" rx="24" fill="url(#grid)"/>
+  <rect x="56" y="54" width="36" height="4" rx="2" fill="url(#accent)"/>
+  <g font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+    <text x="105" y="61" fill="#91aac2" font-size="13" font-weight="600" letter-spacing="3">UBUNTU · DOCKER · NVIDIA</text>
+    <text x="54" y="139" fill="#f0f7ff" font-size="64" font-weight="750" letter-spacing="-2">GPU LAB</text>
+    <text x="58" y="186" fill="#c4d5e8" font-size="25">Shared compute. Personal workspaces.</text>
+    <text x="58" y="219" fill="#91aac2" font-size="17">From a browser tab to your next experiment.</text>
+    <g font-size="14" font-weight="600">
+      <rect x="58" y="267" width="128" height="36" rx="18" fill="#183347" stroke="#33586b"/>
+      <text x="122" y="290" text-anchor="middle" fill="#a5f3fc">WORKSPACE</text>
+      <rect x="198" y="267" width="114" height="36" rx="18" fill="#1d2b48" stroke="#3d4e75"/>
+      <text x="255" y="290" text-anchor="middle" fill="#c7d2fe">TRAINING</text>
+      <rect x="324" y="267" width="98" height="36" rx="18" fill="#19343a" stroke="#335b5a"/>
+      <text x="373" y="290" text-anchor="middle" fill="#99f6e4">DEBUG</text>
+    </g>
+    <g fill="none" stroke="#45677f" stroke-width="2">
+      <path d="M 810 180 H 850 M 850 94 V 266 M 850 94 H 880 M 850 180 H 880 M 850 266 H 880"/>
+      <path d="M 1118 94 H 1150 V 266 H 1118 M 1118 180 H 1150" stroke-opacity="0.5"/>
+    </g>
+    <rect x="710" y="148" width="100" height="64" rx="12" fill="#142b40" stroke="#45677f"/>
+    <text x="760" y="176" text-anchor="middle" fill="#e0efff" font-size="13" font-weight="700">FIFO</text>
+    <text x="760" y="195" text-anchor="middle" fill="#91aac2" font-size="12">scheduler</text>
+    <g>
+      <rect x="880" y="58" width="110" height="72" rx="12" fill="#142b40" stroke="#426477"/>
+      <rect x="1008" y="58" width="110" height="72" rx="12" fill="#142b40" stroke="#426477"/>
+      <rect x="880" y="230" width="110" height="72" rx="12" fill="#142b40" stroke="#426477"/>
+      <rect x="1008" y="230" width="110" height="72" rx="12" fill="#142b40" stroke="#426477"/>
+      <rect x="880" y="148" width="238" height="64" rx="12" fill="#102e3e" stroke="#4f9baf"/>
+      <g fill="#67e8f9">
+        <circle cx="902" cy="81" r="4"/>
+        <circle cx="1030" cy="81" r="4"/>
+        <circle cx="902" cy="253" r="4"/>
+        <circle cx="1030" cy="253" r="4"/>
+      </g>
+      <g fill="#d9e9f8" font-size="16" font-weight="600">
+        <text x="896" y="110">GPU 00</text>
+        <text x="1024" y="110">GPU 01</text>
+        <text x="896" y="282">GPU 02</text>
+        <text x="1024" y="282">GPU 03</text>
+      </g>
+      <text x="999" y="175" text-anchor="middle" fill="#a5f3fc" font-size="14" font-weight="600">YOUR NEXT EXPERIMENT</text>
+      <text x="999" y="195" text-anchor="middle" fill="#91aac2" font-size="12">Persistent files · Python environments</text>
+    </g>
+  </g>
+</svg>
