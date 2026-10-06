@@ -99,7 +99,7 @@ try:
     mode = call(admin, "GET", "/resources/gpus")["mode"]
     if args.gpu and mode != "local-gpu-docker":
         raise AssertionError(
-            "Switch with scripts/set-scheduler.ps1 -Mode local-gpu-docker first"
+            "Switch with ./scripts/lab.sh set-scheduler local-gpu-docker first"
         )
     if not args.gpu and mode != "mock-docker":
         raise AssertionError("Full acceptance needs mock-docker with five GPU slots")
@@ -153,17 +153,12 @@ try:
     else:
         workspace = call(a, "POST", "/workspace/start")
         ca = docker_client.containers.get(workspace["container_id"])
-        wait(
-            lambda: ca.exec_run(
-                ["test", "-f", "/opt/user-env/venv/bin/python"]
-            ).exit_code
-            == 0,
-            "venv initialization",
-        )
+        # The Python symlink appears before uv finishes seeding pip. The editor
+        # starts only after the entrypoint finishes environment initialization.
+        route = workspace["route_path"]
+        wait(lambda: a.get(route).status_code == 200, "code-server and venv initialization")
         exec_ok(ca, ["/opt/user-env/venv/bin/pip", "install", "rich==13.9.4"])
         exec_ok(ca, ["bash", "-c", "echo WORKSPACE_OK > /workspace/persist.txt"])
-        route = workspace["route_path"]
-        wait(lambda: a.get(route).status_code == 200, "code-server route")
         assert httpx.get(base + route).status_code == 401
         assert b.get(route).status_code == 403
         assert admin.get(route).status_code == 200

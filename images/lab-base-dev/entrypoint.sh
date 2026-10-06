@@ -12,6 +12,20 @@ ensure-user-env
 export VIRTUAL_ENV=/opt/user-env/venv
 export PATH="$VIRTUAL_ENV/bin:$PATH"
 export HOME="/home/$LAB_USERNAME"
-# Persistent VS Code settings/extensions and shell activation across replacement.
-printf 'export VIRTUAL_ENV=/opt/user-env/venv\nexport PATH=/opt/user-env/venv/bin:$PATH\n' >> "$HOME/.bashrc"
+# Activate after any image-provided shell setup, including Conda initialization.
+printf '\nsource /opt/user-env/venv/bin/activate\n' >> "$HOME/.bashrc"
+printf 'source "$HOME/.bashrc"\n' >> "$HOME/.bash_profile"
+if [[ ${1:-} == code-server ]]; then
+    arguments=("$@")
+    for ((index=0; index<${#arguments[@]}; index++)); do
+        if [[ ${arguments[index]} == --user-data-dir ]]; then
+            configure-lab-editor "${arguments[index+1]}"
+            break
+        fi
+    done
+    # Seed the persistent extension directory without replacing user extensions.
+    mkdir -p /workspace/.lab/extensions
+    flock /opt/user-env/.init.lock cp -an /opt/lab/extensions/. /workspace/.lab/extensions/
+    chown -R "$LAB_UID:$LAB_GID" /workspace/.lab
+fi
 exec runuser -u "$LAB_USERNAME" --preserve-environment -- "$@"

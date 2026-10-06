@@ -28,6 +28,15 @@ class DockerRuntime:
     def name(self, kind: str, resource_id: str) -> str:
         return f"lab-{kind}-{resource_id}"
 
+    def remove_python_volume(self, user: User):
+        try:
+            volume = self.client.volumes.get(f"lab_pyenv_{user.username}")
+        except NotFound:
+            return
+        if (volume.attrs.get("Labels") or {}).get("lab.project") != settings.project:
+            raise RuntimeError("Python volume belongs to another project")
+        volume.remove(force=False)
+
     def get(self, name: str):
         try:
             container = self.client.containers.get(name)

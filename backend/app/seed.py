@@ -10,7 +10,7 @@ from .docker_runtime import runtime
 def seed():
     if len(settings.secret) < 32 or len(settings.admin_password) < 12:
         raise RuntimeError(
-            "Run scripts/bootstrap.ps1 to generate session/admin credentials"
+            "Run scripts/lab.sh bootstrap to generate session/admin credentials"
         )
     with SessionLocal() as db:
         db.execute(text("SELECT pg_advisory_xact_lock(719101)"))
@@ -24,6 +24,23 @@ def seed():
             )
             db.add(env)
             db.flush()
+        try:
+            torch_image = runtime.client.images.get(settings.torch_image)
+        except NotFound:
+            torch_image = None
+        if torch_image:
+            torch_env = db.scalar(select(Environment).where(Environment.image == torch_image.id))
+            if torch_env is None:
+                torch_env = Environment(
+                    name="CUDA 12.8 · nvcc · PyTorch 2.7.1",
+                    image=torch_image.id,
+                    image_version="2.7.1-cu128-editor",
+                    description="Python 3.11 + PyTorch 2.7.1/CUDA 12.8；VS Code Python 扩展；默认持久化 venv",
+                )
+                db.add(torch_env)
+                db.flush()
+            if torch_env.enabled:
+                env = torch_env
         for template in db.scalars(select(Environment)):
             try:
                 runtime.client.images.get(template.image).tag(f"lab-env-{template.id}", tag="pinned")

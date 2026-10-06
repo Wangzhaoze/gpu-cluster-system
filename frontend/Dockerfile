@@ -1,4 +1,4 @@
-ARG LOCAL_NODE_IMAGE=lab-local-node:20.20.2
+ARG LOCAL_NODE_IMAGE=node:20.20.2-bookworm-slim
 ARG LAB_BASE_IMAGE=lab-base-dev:2026.10-poc
 FROM ${LOCAL_NODE_IMAGE} AS build
 WORKDIR /lab-build

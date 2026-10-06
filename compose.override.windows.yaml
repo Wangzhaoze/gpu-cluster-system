@@ -1,3 +1,0 @@
-# Windows host paths are generated into .env by scripts/bootstrap.ps1.
-# Compose already handles drive-letter bind mounts; no platform override is needed.
-services: {}

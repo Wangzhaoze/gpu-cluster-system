@@ -1,4 +1,4 @@
-"""Initial Windows POC schema. Freeze this revision; future changes use new revisions."""
+"""Initial schema. Freeze this revision; future changes use new revisions."""
 
 from alembic import op
 import sqlalchemy as sa
