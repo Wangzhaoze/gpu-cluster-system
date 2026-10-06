@@ -17,6 +17,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 from .auth import admin_user, current_user, hasher, token_hash, verify_password
 from .config import settings
+from .host_editor import host_workspace
 from .db import get_db
 from .docker_runtime import runtime
 from .models import (
@@ -396,6 +397,10 @@ def forward_auth(
     uri = unquote(urlsplit(request.headers.get("x-forwarded-uri", "")).path)
     if ".." in uri.split("/") or "\\" in uri or "\x00" in uri:
         raise HTTPException(403, "无效路由")
+    if re.fullmatch(r"/host(?:/.*)?", uri):
+        if user.role == "ADMIN":
+            return Response(status_code=200)
+        raise HTTPException(403, "仅管理员可以访问宿主机")
     workspace_match = re.fullmatch(r"/workspace/([a-z][a-z0-9_]{2,31})/.*", uri)
     debug_match = re.fullmatch(r"/debug/([a-f0-9-]{36})/.*", uri)
     if workspace_match:
@@ -412,6 +417,11 @@ def forward_auth(
         ):
             return Response(status_code=200)
     raise HTTPException(403, "无权访问此工作区或调试会话")
+
+
+@app.get("/api/auth/host-editor")
+def host_editor_auth(user: User = Depends(admin_user)):
+    return Response(status_code=204)
 
 
 @app.get("/api/users")
@@ -557,6 +567,8 @@ def delete_user(user_id: str, user: User = Depends(admin_user), db: Session = De
 
 
 def workspace_payload(db: Session, target: User):
+    if target.role == "ADMIN":
+        return host_workspace()
     workspace = db.get(Workspace, target.id)
     container = runtime.get(runtime.name("workspace", target.username))
     workspace.state = (
@@ -567,6 +579,7 @@ def workspace_payload(db: Session, target: User):
     host_paths = storage.host_paths(target.username)
     import_destination = shlex.quote(host_paths["workspace"] + "/project/")
     return {
+        "mode": "container",
         "host_paths": host_paths,
         "host_uid": target.uid_hint,
         "host_gid": target.uid_hint,
@@ -594,6 +607,15 @@ def workspace_action(db: Session, actor: User, target: User, action: str):
     target = lock_user(db, target)
     if not target:
         raise HTTPException(404, "用户不存在")
+    if target.role == "ADMIN":
+        if action != "start":
+            raise HTTPException(422, "宿主机服务不通过学生工作区停止或重建")
+        payload = host_workspace()
+        if payload["state"] != "RUNNING":
+            raise HTTPException(503, payload["error_message"])
+        audit(db, actor, "host_editor.open", "host", "local")
+        db.commit()
+        return payload
     container = runtime.get(runtime.name("workspace", target.username))
     record = db.get(Workspace, target.id)
     if action in {"stop", "restart"}:
@@ -643,6 +665,8 @@ def manage_workspace(
 def delete_workspace(user_id: str | None = None, user: User = Depends(admin_user), db: Session = Depends(get_db)):
     deletion_lock(db)
     target = lock_user(db, target_user(db, user, user_id))
+    if target.role == "ADMIN":
+        raise HTTPException(422, "不能通过工作区删除宿主机文件")
     idle_user(db, target)
     container = runtime.get(runtime.name("workspace", target.username))
     if container:

@@ -9,6 +9,8 @@ Usage: ./scripts/lab.sh COMMAND [OPTIONS]
   bootstrap [--dataset-path DIR]  Generate configuration and prepare base images
   up [--remote] [--no-build]      Build and start the application
   down                           Stop this project's containers, retaining data
+  host-editor ACTION             Install/start/stop/status native admin editor
+  host-test                      Verify public native host editor permissions
   status                         Show Compose service status
   logs [SERVICE]                 Follow service logs
   test [--gpu]                   Run backend and application acceptance tests
@@ -105,6 +107,9 @@ case "$command" in
         if [[ $(env_value SCHEDULER_BACKEND) == local-gpu-docker ]]; then
             compose_args+=(--profile gpu)
         fi
+        if [[ $(env_value LAB_HOST_EDITOR_ENABLED 2>/dev/null || echo false) == true ]]; then
+            compose_args+=(--profile host)
+        fi
         if [[ "$remote" == true ]]; then
             ensure_image "$(env_value CLOUDFLARED_IMAGE)"
             compose_args+=(--profile remote)
@@ -129,15 +134,23 @@ case "$command" in
             mapfile -t container_ids <<< "$containers"
             lab_docker stop "${container_ids[@]}"
         fi
-        lab_docker compose --profile remote --profile gpu down
+        lab_docker compose --profile remote --profile gpu --profile host down
         echo 'Stopped. Files, Python environments, results and database retained.'
         ;;
-    status) lab_docker compose --profile remote --profile gpu ps ;;
+    host-editor) "$LAB_ROOT/scripts/host-editor.sh" "$@" ;;
+    status) lab_docker compose --profile remote --profile gpu --profile host ps ;;
     logs) lab_docker compose logs -f --tail 100 "$@" ;;
     test)
         [[ $# == 0 || ( $# == 1 && $1 == --gpu ) ]] || { usage >&2; exit 2; }
         lab_docker compose exec -T backend python3 -m pytest -q
         lab_docker compose run --rm --no-deps -T --entrypoint python3 backend integration/acceptance.py "$@"
+        ;;
+    host-test)
+        [[ $# == 0 ]] || { usage >&2; exit 2; }
+        url=$(remote_url)
+        [[ -n "$url" ]] || { echo 'No public tunnel URL is available.' >&2; exit 1; }
+        lab_docker compose run --rm --no-deps -T --entrypoint python3 backend \
+            -m integration.host_editor --url "$url"
         ;;
     workspace-test)
         [[ $# == 0 || ( $# == 1 && $1 == --public ) ]] || { usage >&2; exit 2; }

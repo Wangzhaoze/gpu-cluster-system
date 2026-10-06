@@ -379,7 +379,7 @@ function App() {
   const activeDebug = debug.filter((d) => !terminal.includes(d.status));
   const nav = [
     ["dashboard", "总览"],
-    ["workspace", "工作区"],
+    ["workspace", user?.role === "ADMIN" ? "宿主机" : "工作区"],
     ["jobs", "训练任务"],
     ["debug", "在线调试"],
     ["environment", "环境"],
@@ -564,7 +564,7 @@ function App() {
                 {page === "dashboard"
                   ? "算力、任务和工作区，尽在这里。"
                   : page === "workspace"
-                    ? "持续保存你的代码和 Python 环境。"
+                    ? (user.role === "ADMIN" ? "直接连接 Ubuntu，管理宿主机文件和 Docker。" : "持续保存你的代码和 Python 环境。")
                     : page === "jobs"
                       ? "提交实验，由调度器分配资源并保留运行日志。"
                       : page === "debug"
@@ -709,18 +709,18 @@ function App() {
                 </section>
                 <section className="panel workspace-teaser">
                   <div className="panel-head">
-                    <h2>我的工作区</h2>
+                    <h2>{user.role === "ADMIN" ? "宿主机控制台" : "我的工作区"}</h2>
                     <Icon name="workspace" />
                   </div>
                   <Status value={workspace?.state || "STOPPED"} />
-                  <p>浏览器 VS Code</p>
+                  <p>{user.role === "ADMIN" ? "Ubuntu 原生 VS Code" : "浏览器 VS Code"}</p>
                   <span className="muted">
-                    CPU 工作区不占用 GPU。你的文件和安装的 Python 包会保留。
+                    {user.role === "ADMIN" ? "以 local 用户操作本机文件、Docker 和系统服务。" : "CPU 工作区不占用 GPU。你的文件和安装的 Python 包会保留。"}
                   </span>
                   <div className="actions">
                     <button
                       className="primary"
-                      disabled={busy}
+                      disabled={busy || (workspace?.mode === "host" && workspace.state !== "RUNNING")}
                       onClick={() =>
                         workspace?.state === "RUNNING"
                           ? window.open(
@@ -735,8 +735,8 @@ function App() {
                       }
                     >
                       {workspace?.state === "RUNNING"
-                        ? "打开 VS Code ↗"
-                        : "启动工作区"}
+                        ? (workspace.mode === "host" ? "打开宿主机 VS Code ↗" : "打开 VS Code ↗")
+                        : (workspace?.mode === "host" ? "宿主机服务未运行" : "启动工作区")}
                     </button>
                     <button onClick={() => setPage("workspace")}>
                       查看详情
@@ -746,7 +746,30 @@ function App() {
               </div>
             </>
           )}
-          {page === "workspace" && workspace && (
+          {page === "workspace" && workspace?.mode === "host" && (
+            <section className="panel">
+              <div className="panel-head"><h2>Ubuntu 宿主机</h2><Status value={workspace.state} /></div>
+              <p className="muted">
+                VS Code 原生运行在宿主机，终端使用本机 {workspace.host_user} 用户，可直接管理宿主机文件和 Docker。
+                系统级操作使用 sudo，并输入宿主机用户密码。所有管理员账号连接同一个宿主机环境。
+              </p>
+              <div className="detail-grid">
+                <div><span>Linux 用户</span><strong>{workspace.host_user} · UID {workspace.host_uid}</strong></div>
+                <div><span>默认打开目录</span><code>{workspace.host_home}</code><small>可在 VS Code 中打开其他宿主机目录</small></div>
+                <div><span>宿主机 Python</span><code>{workspace.host_python}</code><small>终端默认启用本机 Python / PyTorch 环境</small></div>
+              </div>
+              {workspace.state === "RUNNING" ? (
+                <div className="actions">
+                  <a className="button primary" href={workspace.route_path} target="_blank" rel="noreferrer">打开宿主机 VS Code ↗</a>
+                  <a className="button" href={workspace.route_path + "?folder=" + encodeURIComponent("/home/local/gpu-cluster-system")} target="_blank" rel="noreferrer">打开集群项目 ↗</a>
+                </div>
+              ) : <p className="muted">{workspace.error_message}。在宿主机执行 ./scripts/host-editor.sh install 启用服务。</p>}
+              <h3>在宿主机终端操作</h3>
+              <p className="muted">打开 VS Code 后选择 Terminal → New Terminal。宿主机终端可以直接使用本机资源。</p>
+              <pre>{'pwd\nid\ndocker ps\nnvidia-smi\npython -c "import torch; print(torch.__version__, torch.cuda.is_available())"\nsudo systemctl status docker'}</pre>
+            </section>
+          )}
+          {page === "workspace" && workspace?.mode === "container" && (
             <>
               <section className="panel">
                 <div className="panel-head">
@@ -1425,6 +1448,7 @@ function App() {
                         <option value="MEMBER">成员</option>
                         <option value="ADMIN">管理员</option>
                       </select>
+                      <small>成员使用独立容器；管理员可以通过宿主机 VS Code 管理本机文件和 Docker。</small>
                     </Field>
                     <Field label="固定环境">
                       <select
@@ -1537,6 +1561,7 @@ function App() {
                               >
                                 {u.enabled ? "停用" : "启用"}
                               </button>
+                              {u.role !== "ADMIN" && <>
                               <button
                                 disabled={busy}
                                 onClick={() =>
@@ -1555,6 +1580,7 @@ function App() {
                               <button className="danger" disabled={busy}
                                 onClick={() => deleteResource("/workspace?user_id=" + u.id,
                                   "删除 " + u.username + " 的工作区文件、Python 环境和缓存；保留账号、任务记录和结果。必须先停止调试和训练。")}>删除工作区</button>
+                              </>}
                               <button className="danger" disabled={busy || u.enabled || u.id === user.id}
                                 title="请先停用账号并停止所有任务"
                                 onClick={() => deleteResource("/users/" + u.id,

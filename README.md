@@ -91,7 +91,7 @@ See [public access and student instructions](docs/REMOTE_ACCESS.md), [Ubuntu dep
 
 ## Host workspace files
 
-Every signed-in user can find their own absolute Ubuntu host paths under **工作区 → 宿主机文件位置**, even while their workspace is stopped. The page includes copy buttons, container path mappings, the user's numeric UID/GID and an ownership-preserving import command. The workspace API keeps the same member/admin access rules.
+Every student can find their own absolute Ubuntu host paths under **工作区 → 宿主机文件位置**, even while their workspace is stopped. The page includes copy buttons, container path mappings, the user's numeric UID/GID and an ownership-preserving import command. The workspace API keeps the same member/admin access rules.
 
 The directory shown beside `/workspace` is a live Docker bind mount: edits on the host and in Web VS Code affect the same files. On the Ubuntu host, replace `/path/to/project/` in the displayed `sudo rsync -a --chown=UID:GID` command with the source project directory. It copies into the user's `project` subfolder and gives the workspace user permission to continue editing. It does not delete existing files. Open `/workspace/project` in VS Code and create a terminal; Python continues to use `/opt/user-env/venv/bin/python`. Refresh the Explorer if new files have not appeared yet. Save open files before modifying them from the host.
 
@@ -100,3 +100,38 @@ The directory shown beside `/workspace` is a live Docker bind mount: edits on th
 The deployed checkout is `/home/local/gpu-cluster-system`; its private `.env` points to `/home/local/gpu-cluster-system/runtime`. Both are ignored by Git. Manage the deployment from this checkout with `./scripts/lab.sh up --remote`, `status` and `remote-url`. Retain the `gpu-lab-poc` Compose project, `gpu-lab-poc_postgres-data` database volume and `lab_pyenv_*` Python volumes. A runtime migration must pause workspace writers and backend/worker before copying data with numeric ownership, then recreate running workspaces with the new bind paths. Keep an existing Quick Tunnel running during application migration to retain its public link; restarting the Quick Tunnel creates a new link.
 
 Run `./scripts/lab.sh workspace-test --public` from the deployed checkout to verify the host paths, file ownership, public editor access, PyTorch, project-folder training and stop/start persistence. The test uses two disposable members and a short-lived local maintenance session, then removes them; it retains existing account passwords and files. Docker access is required.
+
+## Native administrator host VS Code
+
+Administrators open **宿主机 → 打开宿主机 VS Code** to manage the Ubuntu PC directly. The editor runs natively as the existing Linux user `local` (UID 1000), opens `/home/local`, and can access host files and Docker. **打开集群项目** opens `/home/local/gpu-cluster-system`. All ADMIN portal accounts share this Linux identity and editor environment; assigning ADMIN grants access to the host. Students continue using their own container workspaces.
+
+Install from the deployed checkout as `local` after bootstrap has prepared the base image:
+
+```bash
+./scripts/lab.sh host-editor install
+./scripts/lab.sh up --remote --no-build
+./scripts/lab.sh host-editor status
+./scripts/lab.sh host-editor restart
+./scripts/lab.sh host-test
+```
+
+The installer extracts code-server and the Python extensions from the existing base image, enables `gpu-cluster-host-editor.service` under `systemctl --user`, and records the host identity in private `.env`. On this PC, user lingering is enabled so the editor starts without an interactive login. Host settings and extensions persist under `runtime/host-editor`. The editor listens only on a private mode-600 Unix socket. The `host` Compose profile supplies an HTTP/WebSocket gateway which mounts that socket and checks the backend ADMIN session; Traefik also checks the administrator before routing `/host/`. Neither the native editor nor the gateway publishes an additional host TCP port.
+
+Choose **Terminal → New Terminal** in VS Code. The terminal starts the host Conda `dl` environment when available; its Python interpreter on this PC is `/home/local/miniconda3/envs/dl/bin/python`, with PyTorch **2.11.0+cu128**, working CUDA and four visible GPUs. The persistent student Python environment remains `/opt/user-env/venv/bin/python` with its assigned template. Host terminal initialization uses an editor-specific Bash rc file and leaves the personal `.bashrc` intact.
+
+```bash
+pwd
+id
+docker ps
+nvidia-smi
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.device_count())"
+sudo systemctl status docker
+```
+
+System administration uses ordinary `sudo` and the Linux `local` account password, which is separate from the portal login password. The installer grants no passwordless sudo. Student workspace deletion/stop/restart actions cannot affect the native editor or `/home/local`; manage the editor using the lifecycle command above. Removing a portal administrator account revokes its portal access and deletes only its old private cluster resources, retaining the shared Linux identity and home directory.
+
+`host-test` verifies public HTTPS/editor/WebSocket access, native host files and operating-system identity, student/anonymous denial, direct gateway authorization and host deletion protection. It uses temporary sessions for existing accounts, removes them afterward and saves `runtime/logs/acceptance-host-editor.json`, without replacing passwords or creating workloads. Run proxy tests using the Node runtime bundled in the base image:
+
+```bash
+sg docker -c 'docker run --rm --pull never --network none --mount type=bind,src=/home/local/gpu-cluster-system/infra,dst=/app/infra,readonly --mount type=bind,src=/home/local/gpu-cluster-system/tests/proxy,dst=/app/tests/proxy,readonly --workdir /app --entrypoint /usr/lib/code-server/lib/node lab-base-dev:2026.10-poc --test tests/proxy/host-editor.test.mjs'
+```

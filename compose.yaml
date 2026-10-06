@@ -16,6 +16,12 @@ x-app-env: &app-env
   SCHEDULER_BACKEND: ${SCHEDULER_BACKEND:-mock-docker}
   MOCK_GPU_COUNT: ${MOCK_GPU_COUNT:-5}
   LOCAL_GPU_COUNT: ${LOCAL_GPU_COUNT:-1}
+  LAB_HOST_EDITOR_ENABLED: ${LAB_HOST_EDITOR_ENABLED:-false}
+  LAB_HOST_EDITOR_USER: ${LAB_HOST_EDITOR_USER:-local}
+  LAB_HOST_EDITOR_HOME: ${LAB_HOST_EDITOR_HOME:-/home/local}
+  LAB_HOST_EDITOR_UID: ${LAB_HOST_EDITOR_UID:-1000}
+  LAB_HOST_EDITOR_GID: ${LAB_HOST_EDITOR_GID:-1000}
+  LAB_HOST_EDITOR_PYTHON: ${LAB_HOST_EDITOR_PYTHON:-/usr/bin/python3}
 
 services:
   postgres:
@@ -128,6 +134,36 @@ services:
       - ${LAB_HOST_ROOT}/logs:/telemetry
     healthcheck:
       test: [CMD, python3, -c, 'import json,time,pathlib; p=pathlib.Path("/telemetry/gpu-telemetry.json"); assert time.time()-p.stat().st_mtime<15 and json.loads(p.read_text())["error"] is None']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    networks: [lab-net]
+
+  host-editor-proxy:
+    image: ${LAB_BASE_IMAGE}
+    pull_policy: never
+    profiles: [host]
+    entrypoint: [/usr/lib/code-server/lib/node, /proxy.mjs]
+    user: '${LAB_HOST_EDITOR_UID:-1000}:${LAB_HOST_EDITOR_GID:-1000}'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    volumes:
+      - ./infra/host-editor-proxy.mjs:/proxy.mjs:ro
+      - ${LAB_HOST_ROOT}/host-editor/run:/run/host-editor:ro
+    labels:
+      lab.project: gpu-lab-poc
+      traefik.enable: 'true'
+      traefik.docker.network: lab-net
+      traefik.http.routers.host-editor.rule: 'Path(`/host`) || PathPrefix(`/host/`)'
+      traefik.http.routers.host-editor.priority: '300'
+      traefik.http.routers.host-editor.entrypoints: web
+      traefik.http.routers.host-editor.middlewares: lab-auth@file,host-editor-strip
+      traefik.http.middlewares.host-editor-strip.stripprefix.prefixes: /host
+      traefik.http.services.host-editor.loadbalancer.server.port: '8080'
+    healthcheck:
+      test: [CMD, /usr/lib/code-server/lib/node, -e, 'fetch("http://127.0.0.1:8080/healthz").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))']
       interval: 5s
       timeout: 3s
       retries: 12

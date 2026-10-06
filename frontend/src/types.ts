@@ -74,7 +74,8 @@ export interface Slot {
     compute_process_count: number;
   } | null;
 }
-export interface Workspace {
+export interface ContainerWorkspace {
+  mode: "container";
   host_paths: Record<"workspace" | "results" | "scratch" | "datasets", string>;
   host_uid: number;
   host_gid: number;
@@ -85,6 +86,19 @@ export interface Workspace {
   environment: Environment;
   venv: string;
 }
+export interface HostWorkspace {
+  mode: "host";
+  state: string;
+  route_path: string;
+  container_id: null;
+  host_user: string;
+  host_home: string;
+  host_uid: number;
+  host_gid: number;
+  host_python: string;
+  error_message: string;
+}
+export type Workspace = ContainerWorkspace | HostWorkspace;
 export interface QueueItem {
   id: string;
   kind: string;
