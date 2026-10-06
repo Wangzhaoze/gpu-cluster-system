@@ -4,7 +4,7 @@ from ..models import User, Workload
 from ..schemas import JobSpec, DebugSpec
 
 ACTIVE = {"STARTING", "RUNNING"}
-TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"}
+TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT", "REJECTED"}
 
 
 class SchedulerBackend(Protocol):

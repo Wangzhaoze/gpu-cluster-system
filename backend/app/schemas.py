@@ -2,7 +2,7 @@ import posixpath
 import re
 import unicodedata
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 PROTECTED = {"PATH", "VIRTUAL_ENV", "HOME", "USER", "LOGNAME", "CUDA_VISIBLE_DEVICES"}
 
@@ -49,7 +49,7 @@ class UserCreate(Input):
     role: Literal["ADMIN", "MEMBER"] = "MEMBER"
     default_environment_id: str | None = None
     max_gpus: int = Field(default=5, ge=0, le=64)
-    max_debug_hours: int = Field(default=4, ge=1, le=24)
+    max_debug_hours: int = Field(default=10, ge=1, le=10)
 
 
 class UserPatch(Input):
@@ -58,7 +58,7 @@ class UserPatch(Input):
     enabled: bool | None = None
     default_environment_id: str | None = None
     max_gpus: int | None = Field(default=None, ge=0, le=64)
-    max_debug_hours: int | None = Field(default=None, ge=1, le=24)
+    max_debug_hours: int | None = Field(default=None, ge=1, le=10)
 
 
 class PasswordReset(Input):
@@ -70,7 +70,20 @@ class PasswordChange(Input):
     new_password: str = Field(min_length=12, max_length=200)
 
 
-class JobSpec(Input):
+class GpuSelection(Input):
+    gpu_indices: list[StrictInt] | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_gpu_selection(self):
+        if self.gpu_indices is not None:
+            if len(self.gpu_indices) != self.requested_gpus:
+                raise ValueError("指定显卡数量必须与 GPU 数量一致")
+            if len(set(self.gpu_indices)) != len(self.gpu_indices) or any(i < 0 or i >= 64 for i in self.gpu_indices):
+                raise ValueError("显卡编号不可重复，且必须为 0 到 63 的整数")
+        return self
+
+
+class JobSpec(GpuSelection):
     environment_id: str | None = None
     requested_gpus: int = Field(default=0, ge=0, le=64)
     requested_cpus: int = Field(default=1, ge=1, le=32)
@@ -97,12 +110,23 @@ class JobSpec(Input):
         return validate_env(values)
 
 
-class DebugSpec(Input):
+class DebugSpec(GpuSelection):
     environment_id: str | None = None
     requested_gpus: int = Field(default=1, ge=0, le=1)
     requested_cpus: int = Field(default=1, ge=1, le=32)
     requested_ram_mb: int = Field(default=2048, ge=256, le=65536)
-    time_limit_seconds: int = Field(default=1800, ge=5, le=86400)
+    time_limit_seconds: int = Field(default=1800, ge=5, le=604800)
+    approval_reason: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def long_debug_reason(self):
+        if self.time_limit_seconds > 36000 and not self.approval_reason.strip():
+            raise ValueError("超过 10 小时的调试需要填写审批理由")
+        return self
+
+
+class ApprovalDecision(Input):
+    note: str = Field(default="", max_length=2000)
 
 
 class EnvironmentCreate(Input):

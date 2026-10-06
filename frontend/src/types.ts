@@ -16,6 +16,13 @@ export interface Environment {
   description: string;
   enabled: boolean;
   available?: boolean;
+  recommended?: boolean;
+}
+export interface DockerImage {
+  id: string;
+  tags: string[];
+  size: number;
+  blocked_reasons: string[];
 }
 export interface Workload {
   id: string;
@@ -25,6 +32,11 @@ export interface Workload {
   status: string;
   command: string;
   requested_gpus: number;
+  requested_gpu_indices: number[] | null;
+  time_limit_seconds: number;
+  approval_status: string;
+  approval_reason: string;
+  approval_note: string;
   assigned_gpus: number[];
   created_at: string;
   started_at: string | null;
@@ -42,6 +54,25 @@ export interface Slot {
   owner_id: string | null;
   username: string | null;
   started_at: string | null;
+  external_busy: boolean;
+  metrics: {
+    name: string;
+    uuid: string;
+    pci_bus_id: string;
+    driver_version: string;
+    memory_total_mb: number | null;
+    memory_used_mb: number | null;
+    memory_free_mb: number | null;
+    utilization_percent: number | null;
+    memory_utilization_percent: number | null;
+    temperature_c: number | null;
+    power_w: number | null;
+    power_limit_w: number | null;
+    fan_percent: number | null;
+    graphics_clock_mhz: number | null;
+    memory_clock_mhz: number | null;
+    compute_process_count: number;
+  } | null;
 }
 export interface Workspace {
   state: string;
@@ -55,6 +86,7 @@ export interface QueueItem {
   kind: string;
   status: string;
   requested_gpus: number;
+  requested_gpu_indices: number[] | null;
   username: string;
 }
 export interface Variable {

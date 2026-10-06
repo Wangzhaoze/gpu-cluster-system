@@ -1,4 +1,6 @@
 from pathlib import Path
+import re
+import shutil
 from typing import Protocol
 from docker.types import Mount
 from .config import settings
@@ -10,7 +12,7 @@ class StorageProvider(Protocol):
     def usage(self, username: str) -> dict[str, int]: ...
 
 
-class WindowsDockerStorage:
+class DockerStorage:
     """Host paths are configuration, never user input; Linux venv lives in a volume."""
 
     def paths(self, username: str) -> dict[str, str]:
@@ -25,7 +27,7 @@ class WindowsDockerStorage:
             Path(settings.runtime_root, relative).mkdir(parents=True, exist_ok=True)
 
     def mounts(self, username: str) -> list[Mount]:
-        root = settings.host_root.replace("\\", "/").rstrip("/")
+        root = settings.host_root.rstrip("/")
         mounts = [
             Mount(f"/{target}", f"{root}/{relative}", type="bind")
             for target, relative in self.paths(username).items()
@@ -62,5 +64,18 @@ class WindowsDockerStorage:
         temp.replace(path)
         return str(path)
 
+    def delete_user_data(self, username: str, kinds: tuple[str, ...]) -> None:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{2,31}", username):
+            raise ValueError("Invalid storage username")
+        root = Path(settings.runtime_root).resolve()
+        for kind in kinds:
+            path = root / self.paths(username)[kind]
+            if not path.parent.resolve().is_relative_to(root):
+                raise ValueError("Storage path escapes runtime root")
+            if path.is_symlink():
+                path.unlink()
+            elif path.exists():
+                shutil.rmtree(path)
 
-storage = WindowsDockerStorage()
+
+storage = DockerStorage()

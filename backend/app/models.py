@@ -37,7 +37,7 @@ class User(Base):
         ForeignKey("environment_templates.id")
     )
     max_gpus: Mapped[int] = mapped_column(Integer, default=5)
-    max_debug_hours: Mapped[int] = mapped_column(Integer, default=4)
+    max_debug_hours: Mapped[int] = mapped_column(Integer, default=10)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=now, onupdate=now
@@ -84,6 +84,12 @@ class Workload(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
     requested_gpus: Mapped[int] = mapped_column(Integer)
+    requested_gpu_indices_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    approval_status: Mapped[str] = mapped_column(String(20), default="NOT_REQUIRED")
+    approval_reason: Mapped[str] = mapped_column(Text, default="")
+    approval_note: Mapped[str] = mapped_column(Text, default="")
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_gpus_json: Mapped[list] = mapped_column(JSON, default=list)
     requested_cpus: Mapped[int] = mapped_column(Integer)
     requested_ram_mb: Mapped[int] = mapped_column(Integer)

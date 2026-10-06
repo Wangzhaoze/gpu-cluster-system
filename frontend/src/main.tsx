@@ -11,6 +11,7 @@ import type {
   Storage,
   Audit,
   Remote,
+  DockerImage,
 } from "./types";
 import "./styles.css";
 
@@ -57,7 +58,7 @@ const size = (n: number) =>
   n >= 1073741824
     ? (n / 1073741824).toFixed(2) + " GB"
     : (n / 1048576).toFixed(1) + " MB";
-const terminal = ["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"];
+const terminal = ["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT", "REJECTED"];
 const statusName: Record<string, string> = {
   PENDING: "排队中",
   STARTING: "启动中",
@@ -68,6 +69,9 @@ const statusName: Record<string, string> = {
   TIMED_OUT: "已超时",
   FREE: "空闲",
   STOPPED: "已停止",
+  AWAITING_APPROVAL: "等待管理员审批",
+  REJECTED: "审批未通过",
+  EXTERNAL_BUSY: "外部占用",
 };
 const loginFailure: Record<string, string> = {
   unknown_user: "用户名不存在",
@@ -150,6 +154,45 @@ function Field({
   );
 }
 
+const metric = (value: number | null | undefined, unit: string) =>
+  value == null ? "—" : Math.round(value * 10) / 10 + unit;
+
+function GpuPicker({ slots, max, initial }: { slots: Slot[]; max: number; initial: number }) {
+  const [mode, setMode] = useState(initial && max ? "auto" : "cpu");
+  const [count, setCount] = useState(Math.min(initial || 1, max));
+  const [selected, setSelected] = useState<number[]>([]);
+  const gpuCount = mode === "cpu" ? 0 : mode === "manual" ? selected.length : count;
+  return <div className="gpu-picker">
+    <Field label="显卡分配">
+      <select value={mode} onChange={(e) => {
+        setMode(e.target.value);
+        if (e.target.value === "auto" && count < 1 && max) setCount(1);
+        if (e.target.value === "manual" && !selected.length) {
+          const first = slots.find((s) => s.state === "FREE" && !s.external_busy) || slots[0];
+          if (first && max) setSelected([first.gpu_index]);
+        }
+      }}>
+        <option value="cpu">仅 CPU</option>
+        <option value="auto" disabled={!max}>自动分配空闲显卡</option>
+        <option value="manual" disabled={!max}>指定显卡</option>
+      </select>
+    </Field>
+    <input type="hidden" name="gpu_mode" value={mode} />
+    <input type="hidden" name="gpu" value={gpuCount} />
+    <input type="hidden" name="gpu_indices" value={JSON.stringify(mode === "manual" ? selected : null)} />
+    {mode === "auto" && <Field label="GPU 数量"><input type="number" min="1" max={max}
+      value={count} required onChange={(e) => setCount(Number(e.target.value))} /></Field>}
+    {mode === "manual" && <div className="gpu-choices">{slots.map((s) => <label key={s.gpu_index}>
+      <input type="checkbox" checked={selected.includes(s.gpu_index)}
+        disabled={!selected.includes(s.gpu_index) && selected.length >= max}
+        onChange={(e) => setSelected(e.target.checked ? [...selected, s.gpu_index] : selected.filter((i) => i !== s.gpu_index))} />
+      <span>GPU {s.gpu_index} · {s.state !== "FREE" ? "平台占用" : s.external_busy ? "外部占用" : "空闲"}
+        <small>{metric(s.metrics?.utilization_percent, "%")} · {metric(s.metrics?.temperature_c, "°C")}</small></span>
+    </label>)}</div>}
+    {mode === "manual" && <p className="muted">最多 {max} 张；指定显卡被占用时等待该卡释放，不会改用其他显卡。</p>}
+  </div>;
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null),
     [loading, setLoading] = useState(true),
@@ -163,7 +206,11 @@ function App() {
     mode: string;
     worker_online: boolean;
     slots: Slot[];
-  }>({ mode: "mock-docker", worker_online: false, slots: [] });
+    telemetry_status: string;
+    telemetry_sampled_at: string | null;
+    telemetry_error: string | null;
+  }>({ mode: "mock-docker", worker_online: false, slots: [], telemetry_status: "unavailable", telemetry_sampled_at: null, telemetry_error: null });
+  const [debugHours, setDebugHours] = useState(1);
   const [workspace, setWorkspace] = useState<Workspace | null>(null),
     [jobs, setJobs] = useState<Workload[]>([]),
     [debug, setDebug] = useState<Workload[]>([]),
@@ -172,6 +219,7 @@ function App() {
     [users, setUsers] = useState<User[]>([]),
     [storage, setStorage] = useState<Storage[]>([]),
     [audit, setAudit] = useState<Audit[]>([]);
+  const [images, setImages] = useState<DockerImage[]>([]);
   const [variables, setVariables] = useState<Variable[]>([]),
     [scope, setScope] = useState("global"),
     [remote, setRemote] = useState<Remote>({ status: "offline", url: null });
@@ -219,14 +267,16 @@ function App() {
     setEnvironments(e);
     setRemote(t);
     if (user.role === "ADMIN") {
-      const [u, s, a] = await Promise.all([
+      const [u, s, a, i] = await Promise.all([
         api<User[]>("/users"),
         api<Storage[]>("/admin/storage"),
         api<Audit[]>("/admin/audit"),
+        api<DockerImage[]>("/admin/images"),
       ]);
       setUsers(u);
       setStorage(s);
       setAudit(a);
+      setImages(i);
     } else {
       setStorage([await api<Storage>("/storage")]);
     }
@@ -283,6 +333,14 @@ function App() {
       setBusy(false);
     }
   }
+  function deleteResource(path: string, description: string) {
+    if (user?.role !== "ADMIN" || !window.confirm(description + "\n此操作无法撤销，确认删除？")) return;
+    act(async () => {
+      await api(path, "DELETE");
+      setEditing(null);
+      setLogTarget(null);
+    }, "已删除");
+  }
   const submit = (
     event: React.FormEvent<HTMLFormElement>,
     action: (data: FormData) => Promise<unknown>,
@@ -299,6 +357,11 @@ function App() {
   };
   const txt = (f: FormData, k: string) => String(f.get(k) || "");
   const num = (f: FormData, k: string) => Number(f.get(k));
+  const gpuIndices = (f: FormData): number[] | null => {
+    const indices = JSON.parse(txt(f, "gpu_indices") || "null");
+    if (txt(f, "gpu_mode") === "manual" && !indices?.length) throw new Error("请至少选择一张显卡");
+    return indices;
+  };
   const envOptions = environments.filter(
     (e) =>
       e.enabled &&
@@ -344,7 +407,7 @@ function App() {
           <div className="login-diagram">
             WORKSPACE <span>→</span> DEBUG <span>→</span> TRAIN
           </div>
-          <small>Windows Docker · 实验室算力平台</small>
+          <small>Ubuntu Docker · 实验室算力平台</small>
         </div>
         <div className="login-card">
           <span className="eyebrow">WELCOME BACK</span>
@@ -532,7 +595,8 @@ function App() {
                 <div>
                   <span>可用 GPU</span>
                   <strong>
-                    {resources.slots.filter((s) => s.state === "FREE").length}
+                    {resources.mode === "local-gpu-docker" && resources.telemetry_status !== "online" ? "—" :
+                      resources.slots.filter((s) => s.state === "FREE" && !s.external_busy).length}
                     <small> / {resources.slots.length}</small>
                   </strong>
                 </div>
@@ -558,15 +622,19 @@ function App() {
               <section className="panel">
                 <div className="panel-head">
                   <h2>GPU 资源</h2>
-                  <span className="muted">独占分配 · FIFO 队列</span>
+                  <span className="muted">每 3 秒采样 · 独占分配 · FIFO 队列</span>
                 </div>
+                <p className="muted">{resources.telemetry_status === "online"
+                  ? "最近采样：" + new Date(resources.telemetry_sampled_at!).toLocaleTimeString("zh-CN")
+                  : resources.telemetry_status === "mock" ? "模拟模式，无真实硬件读数"
+                  : (resources.telemetry_error || "GPU 监控暂不可用") + "；等待恢复，不显示过期读数"}</p>
                 <div className="gpu-grid">
                   {resources.slots.map((s) => (
                     <div
                       key={s.gpu_index}
                       className={
                         "gpu-card " +
-                        (s.state === "FREE" ? "available" : "occupied")
+                        (s.state === "FREE" && !s.external_busy ? "available" : "occupied")
                       }
                     >
                       <div>
@@ -578,8 +646,22 @@ function App() {
                         </small>
                       </div>
                       <h3>GPU {s.gpu_index}</h3>
-                      <Status value={s.state} />
-                      <p>{s.username || "等待下一个实验"}</p>
+                      <strong className="gpu-model">{s.metrics?.name || (resources.mode === "mock-docker" ? "模拟显卡" : "NVIDIA 显卡")}</strong>
+                      <Status value={s.external_busy ? "EXTERNAL_BUSY" : s.state} />
+                      <p>{s.username || (s.external_busy ? "外部计算进程占用，等待释放" : "平台尚未分配")}</p>
+                      <dl className="gpu-metrics">
+                        <dt>GPU 利用率</dt><dd>{metric(s.metrics?.utilization_percent, "%")}</dd>
+                        <dt>显存</dt><dd>{metric(s.metrics?.memory_used_mb, "")} / {metric(s.metrics?.memory_total_mb, " MiB")}</dd>
+                        <dt>显存控制器利用率</dt><dd>{metric(s.metrics?.memory_utilization_percent, "%")}</dd>
+                        <dt>温度</dt><dd>{metric(s.metrics?.temperature_c, "°C")}</dd>
+                        <dt>功耗 / 上限</dt><dd>{metric(s.metrics?.power_w, "")} / {metric(s.metrics?.power_limit_w, " W")}</dd>
+                        <dt>风扇</dt><dd>{metric(s.metrics?.fan_percent, "%")}</dd>
+                        <dt>核心 / 显存频率</dt><dd>{metric(s.metrics?.graphics_clock_mhz, "")} / {metric(s.metrics?.memory_clock_mhz, " MHz")}</dd>
+                        <dt>计算进程数</dt><dd>{s.metrics?.compute_process_count ?? "—"}</dd>
+                      </dl>
+                      {s.metrics && <details className="gpu-details"><summary>硬件详情</summary>
+                        <div>驱动：{s.metrics.driver_version}<br />PCI：{s.metrics.pci_bus_id}<br />UUID：{s.metrics.uuid}</div>
+                      </details>}
                       <small>
                         {s.owner_type === "train"
                           ? "TRAINING"
@@ -606,7 +688,7 @@ function App() {
                             <strong>{q.username}</strong>
                             <small>
                               {q.kind === "train" ? "训练" : "调试"} ·{" "}
-                              {q.requested_gpus} GPU · {q.id.slice(0, 8)}
+                              {q.requested_gpus} GPU{q.requested_gpu_indices ? " (" + q.requested_gpu_indices.join(", ") + ")" : " (自动)"} · {q.id.slice(0, 8)}
                             </small>
                           </div>
                           <Status value={q.status} />
@@ -721,6 +803,10 @@ function App() {
                       打开 VS Code ↗
                     </a>
                   )}
+                  {user.role === "ADMIN" && (
+                    <button className="danger" disabled={busy}
+                      onClick={() => deleteResource("/workspace", "删除自己的工作区文件、Python 环境和缓存；保留训练结果和任务记录。必须先停止所有调试和训练。")}>删除工作区</button>
+                  )}
                 </div>
               </section>
               <section className="panel">
@@ -774,6 +860,7 @@ function App() {
                           command: txt(f, "command"),
                           workdir: txt(f, "workdir"),
                           requested_gpus: num(f, "gpu"),
+                          gpu_indices: gpuIndices(f),
                           requested_cpus: num(f, "cpu"),
                           requested_ram_mb: num(f, "ram"),
                           time_limit_seconds: num(f, "time"),
@@ -805,16 +892,7 @@ function App() {
                         required
                       />
                     </Field>
-                    <Field label="GPU 数量">
-                      <input
-                        name="gpu"
-                        type="number"
-                        min="0"
-                        max={Math.min(user.max_gpus, resources.slots.length)}
-                        defaultValue="0"
-                        required
-                      />
-                    </Field>
+                    <GpuPicker slots={resources.slots} max={Math.min(user.max_gpus, resources.slots.length)} initial={0} />
                     <Field label="CPU 核数">
                       <input
                         name="cpu"
@@ -920,7 +998,7 @@ function App() {
                           <td>
                             {j.assigned_gpus.length
                               ? j.assigned_gpus.join(", ")
-                              : j.requested_gpus + " 请求"}
+                              : j.requested_gpu_indices ? "指定 " + j.requested_gpu_indices.join(", ") : j.requested_gpus + " 自动"}
                           </td>
                           <td>{date(j.created_at)}</td>
                           <td>{j.exit_code ?? "—"}</td>
@@ -964,6 +1042,10 @@ function App() {
                                   取消
                                 </button>
                               )}
+                              {user.role === "ADMIN" && terminal.includes(j.status) && (
+                                <button className="danger" disabled={busy}
+                                  onClick={() => deleteResource("/jobs/" + j.id, "删除训练记录和日志；保留结果文件。")}>删除记录</button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -987,11 +1069,13 @@ function App() {
                         api("/debug", "POST", {
                           environment_id: txt(f, "environment_id"),
                           requested_gpus: num(f, "gpu"),
+                          gpu_indices: gpuIndices(f),
                           requested_cpus: num(f, "cpu"),
                           requested_ram_mb: num(f, "ram"),
-                          time_limit_seconds: num(f, "ttl"),
+                          time_limit_seconds: num(f, "hours") * 3600,
+                          approval_reason: txt(f, "approval_reason"),
                         }),
-                      "调试会话已进入队列",
+                      debugHours > 10 ? "申请已提交，等待管理员审批（暂不占用 GPU）" : "调试会话已进入队列",
                     )
                   }
                 >
@@ -1008,22 +1092,14 @@ function App() {
                         ))}
                       </select>
                     </Field>
-                    <Field label="GPU">
-                      <select name="gpu">
-                        <option value="1">1 GPU</option>
-                        <option value="0">CPU only</option>
-                      </select>
+                    <GpuPicker slots={resources.slots} max={Math.min(1, user.max_gpus, resources.slots.length)} initial={1} />
+                    <Field label="会话时长（小时）">
+                      <input name="hours" type="number" min="0.5" max="168" step="0.5"
+                        value={debugHours} onChange={(e) => setDebugHours(Number(e.target.value))} required />
                     </Field>
-                    <Field label="会话时长">
-                      <select name="ttl">
-                        {[1800, 3600, 7200, 14400]
-                          .filter((t) => t <= user.max_debug_hours * 3600)
-                          .map((t) => (
-                            <option key={t} value={t}>
-                              {t / 60} 分钟
-                            </option>
-                          ))}
-                      </select>
+                    <Field label={debugHours > 10 ? "审批理由（必填）" : "备注 / 长时调试理由"}>
+                      <input name="approval_reason" maxLength={2000} required={debugHours > 10}
+                        placeholder="超过 10 小时需管理员审批，最多申请 7 天" />
                     </Field>
                     <Field label="CPU 核数">
                       <input
@@ -1048,16 +1124,17 @@ function App() {
                   </div>
                   <div className="form-foot">
                     <span className="muted">
-                      与工作区共享代码、Python 包与结果。到期自动释放 GPU。
+                      免审批上限 {user.max_debug_hours} 小时；超过 10 小时需管理员审批。时长从容器启动计算，到期释放 GPU。
                     </span>
                     <button className="primary" disabled={busy}>
-                      开启调试 →
+                      {debugHours > 10 ? "提交审批申请 →" : "开启调试 →"}
                     </button>
                   </div>
                 </form>
               </section>
               <section className="panel">
-                <h2>调试会话</h2>
+                <h2>调试会话 {user.role === "ADMIN" && debug.some((d) => d.status === "AWAITING_APPROVAL") &&
+                  <span className="tag">待审批 {debug.filter((d) => d.status === "AWAITING_APPROVAL").length}</span>}</h2>
                 {debug.length ? (
                   debug.map((d) => (
                     <div className="debug-row" key={d.id}>
@@ -1067,6 +1144,7 @@ function App() {
                           {d.username} · {d.id.slice(0, 8)}
                         </strong>
                         <small>
+                          申请 {d.time_limit_seconds / 3600} 小时 · {d.requested_gpu_indices ? "指定 GPU " + d.requested_gpu_indices.join(", ") : "自动分配"} ·{" "}
                           {d.assigned_gpus.length
                             ? "GPU " + d.assigned_gpus.join(", ")
                             : "CPU"}{" "}
@@ -1084,9 +1162,20 @@ function App() {
                               " 分钟"
                             : "等待调度"}
                         </small>
+                        {d.approval_reason && <small>申请理由：{d.approval_reason}</small>}
+                        {d.approval_note && <small>管理员意见：{d.approval_note}</small>}
                       </div>
                       <Status value={d.status} />
                       <div className="actions compact">
+                        {user.role === "ADMIN" && d.status === "AWAITING_APPROVAL" && (
+                          <><button disabled={busy || d.cancel_requested} onClick={() => {
+                            const note = window.prompt("批准 " + d.username + " 的 " + d.time_limit_seconds / 3600 + " 小时调试申请。可填写审批意见：", "");
+                            if (note !== null) act(() => api("/debug/" + d.id + "/approve", "POST", {note}), "已批准，进入调度队列");
+                          }}>批准</button><button className="danger" disabled={busy || d.cancel_requested} onClick={() => {
+                            const note = window.prompt("填写拒绝理由：", "暂不批准此次长时调试");
+                            if (note !== null) act(() => api("/debug/" + d.id + "/reject", "POST", {note}), "已拒绝申请");
+                          }}>拒绝</button></>
+                        )}
                         {d.status === "RUNNING" && (
                           <a
                             className="button"
@@ -1108,8 +1197,12 @@ function App() {
                               )
                             }
                           >
-                            停止
+                            {d.status === "AWAITING_APPROVAL" ? "撤回申请" : "停止"}
                           </button>
+                        )}
+                        {user.role === "ADMIN" && terminal.includes(d.status) && (
+                          <button className="danger" disabled={busy}
+                            onClick={() => deleteResource("/debug/" + d.id, "删除调试记录和日志；保留工作区与结果文件。")}>删除记录</button>
                         )}
                       </div>
                     </div>
@@ -1190,7 +1283,7 @@ function App() {
                   <p className="muted">
                     为每位成员创建独立账号。用户名为 3–32
                     位小写字母、数字或下划线，以字母开头。一般选择「成员」，GPU
-                    上限填 1，Debug 上限填 4 小时。
+                    上限填 1，Debug 免审批上限填 10 小时；超过 10 小时需单独申请审批。
                   </p>
                 )}
                 <form
@@ -1293,10 +1386,10 @@ function App() {
                             (e) =>
                               e.id ===
                               (editing?.default_environment_id ||
-                                user.default_environment_id),
+                                envOptions.find((e) => e.recommended)?.id || user.default_environment_id),
                           )
                             ? editing?.default_environment_id ||
-                              user.default_environment_id
+                              envOptions.find((e) => e.recommended)?.id || user.default_environment_id
                             : envOptions[envOptions.length - 1]?.id
                         }
                       >
@@ -1320,13 +1413,13 @@ function App() {
                         required
                       />
                     </Field>
-                    <Field label="Debug 时长上限 (小时)">
+                    <Field label="Debug 免审批上限 (小时，最多 10)">
                       <input
                         name="max_debug_hours"
                         type="number"
                         min="1"
-                        max="24"
-                        defaultValue={editing?.max_debug_hours ?? 4}
+                        max="10"
+                        defaultValue={editing?.max_debug_hours ?? 10}
                         required
                       />
                     </Field>
@@ -1411,6 +1504,13 @@ function App() {
                               >
                                 停工作区
                               </button>
+                              <button className="danger" disabled={busy}
+                                onClick={() => deleteResource("/workspace?user_id=" + u.id,
+                                  "删除 " + u.username + " 的工作区文件、Python 环境和缓存；保留账号、任务记录和结果。必须先停止调试和训练。")}>删除工作区</button>
+                              <button className="danger" disabled={busy || u.enabled || u.id === user.id}
+                                title="请先停用账号并停止所有任务"
+                                onClick={() => deleteResource("/users/" + u.id,
+                                  "永久删除 " + u.username + " 的账号、工作区、Python 环境、缓存、结果及任务记录；保留审计记录。")}>删除用户</button>
                               <button
                                 disabled={busy}
                                 onClick={() => {
@@ -1460,13 +1560,14 @@ function App() {
                           {e.id === user.default_environment_id && (
                             <span className="tag">我的固定环境</span>
                           )}
+                          {e.recommended && <span className="tag">新用户默认 · PyTorch</span>}
                         </strong>
                         <small>{e.description}</small>
                         <code className="image-name">{e.image}</code>
                       </div>
                       <span className="tag">{e.image_version}</span>
                       {user.role === "ADMIN" && (
-                        <button
+                        <div className="actions compact"><button
                           disabled={busy}
                           onClick={() =>
                             act(
@@ -1480,6 +1581,8 @@ function App() {
                         >
                           {e.enabled ? "停用" : "启用"}
                         </button>
+                        <button className="danger" disabled={busy}
+                          onClick={() => deleteResource("/environments/" + e.id, "删除环境模板 " + e.name + "；仍被用户或记录引用的模板不能删除。保留 Docker 镜像。")}>删除模板</button></div>
                       )}
                     </div>
                   ))}
@@ -1527,6 +1630,23 @@ function App() {
                   </form>
                 )}
               </section>
+              {user.role === "ADMIN" && (
+                <section className="panel">
+                  <h2>Docker 镜像</h2>
+                  <p className="muted">仅管理员可删除未使用的镜像。先删除无引用的环境模板；集群默认镜像和容器使用中的镜像受保护。</p>
+                  <div className="table-wrap"><table>
+                    <thead><tr><th>镜像 / 标签</th><th>大小</th><th>使用情况</th><th>操作</th></tr></thead>
+                    <tbody>{images.map((image) => <tr key={image.id}>
+                      <td><strong>{image.tags.join(", ") || "无标签"}</strong><small className="mono">{image.id.slice(0, 19)}</small></td>
+                      <td>{size(image.size)}</td>
+                      <td>{image.blocked_reasons.join("；") || "未使用"}</td>
+                      <td><button className="danger" disabled={busy || image.blocked_reasons.length > 0}
+                        onClick={() => deleteResource("/admin/images/" + image.id,
+                          "删除镜像 " + image.id + " 及全部标签：" + (image.tags.join(", ") || "无标签"))}>删除镜像</button></td>
+                    </tr>)}</tbody>
+                  </table></div>
+                </section>
+              )}
               <section className="panel">
                 <div className="panel-head">
                   <h2>环境变量</h2>
@@ -1716,14 +1836,14 @@ function App() {
                   </>
                 ) : (
                   <p className="muted">
-                    远程入口未启用。管理员可使用 up.ps1 -Remote 开启。
+                    远程入口未启用。请联系管理员开启公网访问。
                   </p>
                 )}
                 <p className="info">
                   {remote.status === "connecting"
                     ? "隧道正在连接，稍后自动刷新。"
                     : "在其他网络的设备上打开上面的 HTTPS 链接，使用同一个 Portal 账号登录。"}
-                  本机和 Docker Desktop
+                  本机和 Docker
                   需要保持运行。重启隧道会更换临时地址，届时请重新复制链接。
                 </p>
               </section>
@@ -1742,8 +1862,8 @@ function App() {
                         位初始密码。也可以点击「生成随机密码」。
                       </li>
                       <li>
-                        角色选「成员」，固定环境保留默认，GPU 上限填 1，Debug
-                        时长上限填 4，点击「创建用户」。
+                        角色选「成员」，固定环境选择默认 PyTorch 环境，GPU 上限填 1，Debug
+                        免审批上限填 10，点击「创建用户」。
                       </li>
                       <li>
                         在新账号信息卡中点击「复制登录信息」，将链接、成员用户名和初始密码交给对应成员。
@@ -1799,7 +1919,7 @@ function App() {
               </div>
               <p className="muted">
                 {user.role === "ADMIN" ? "管理员" : "实验室成员"} · GPU 上限{" "}
-                {user.max_gpus} · Debug 上限 {user.max_debug_hours} 小时
+                {user.max_gpus} · Debug 免审批上限 {user.max_debug_hours} 小时；超过 10 小时可提交审批
               </p>
               <h2>修改密码</h2>
               <p className="muted">
@@ -1866,7 +1986,7 @@ function App() {
             </section>
           )}
           <footer>
-            GPU LAB · Windows Docker POC
+            GPU LAB · Ubuntu Docker
             <span>{activeDebug.length} 个活跃调试会话</span>
           </footer>
         </main>

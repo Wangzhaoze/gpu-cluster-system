@@ -9,10 +9,10 @@ import unicodedata
 from urllib.parse import unquote, urlsplit
 from urllib.error import URLError
 from urllib.request import urlopen
-from docker.errors import DockerException
+from docker.errors import DockerException, NotFound
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 from .auth import admin_user, current_user, hasher, token_hash, verify_password
 from .config import settings
@@ -30,6 +30,7 @@ from .models import (
 )
 from .schemas import (
     DebugSpec,
+    ApprovalDecision,
     EnvironmentCreate,
     EnvironmentPatch,
     EnvSetting,
@@ -44,6 +45,7 @@ from .schemas import (
 from .scheduler import get_scheduler
 from .scheduler.base import ACTIVE, TERMINAL
 from .storage import storage
+from .gpu_telemetry import read_telemetry
 
 app = FastAPI(
     title="GPU Lab Portal",
@@ -148,10 +150,16 @@ def public_workload(resource: Workload, db: Session) -> dict:
             "container_id",
             "error_message",
             "cancel_requested",
+            "approval_status",
+            "approval_reason",
+            "approval_note",
+            "approved_by",
+            "approved_at",
         )
     }
     result.update(
         assigned_gpus=resource.assigned_gpus_json,
+        requested_gpu_indices=resource.requested_gpu_indices_json,
         env_keys=list(resource.env_json),
         username=db.get(User, resource.user_id).username,
     )
@@ -190,11 +198,42 @@ def allowed_environment(db: Session, user: User, env_id: str | None) -> Environm
     return env
 
 
+def recommended_environment(db: Session) -> Environment | None:
+    try:
+        image_id = runtime.client.images.get(settings.torch_image).id
+    except NotFound:
+        return None
+    return db.scalar(select(Environment).where(
+        Environment.image == image_id, Environment.enabled.is_(True)
+    ).order_by(Environment.created_at.desc()))
+
+
+def deletion_lock(db: Session):
+    # Wait for a whole scheduler tick, including its commits, before deletion.
+    db.execute(text("SELECT pg_advisory_xact_lock(719102)"))
+    db.execute(text("SELECT pg_advisory_xact_lock(719103)"))
+
+
+def lock_user(db: Session, user: User) -> User:
+    return db.scalar(select(User).where(User.id == user.id).with_for_update()
+                     .execution_options(populate_existing=True))
+
+
+def idle_user(db: Session, target: User):
+    if db.scalar(select(Workload.id).where(
+        Workload.user_id == target.id, Workload.status.in_(["AWAITING_APPROVAL", "PENDING", *ACTIVE])
+    ).limit(1)):
+        raise HTTPException(409, "请先停止调试并取消或等待训练任务结束")
+
+
 def validate_resources(user: User, spec):
     if spec.requested_gpus > min(user.max_gpus, settings.gpu_count):
         raise HTTPException(422, "GPU 数量超过用户或集群上限")
+    if spec.gpu_indices is not None and any(index >= settings.gpu_count for index in spec.gpu_indices):
+        raise HTTPException(422, "指定的显卡编号不在本集群中")
     if (
         isinstance(spec, DebugSpec)
+        and spec.time_limit_seconds <= 36000
         and spec.time_limit_seconds > user.max_debug_hours * 3600
     ):
         raise HTTPException(422, "Debug 时间超过用户上限")
@@ -388,7 +427,8 @@ def add_user(
     db.execute(text("SELECT pg_advisory_xact_lock(719103)"))
     if db.scalar(select(User).where(User.username == spec.username)):
         raise HTTPException(409, "用户名已存在")
-    env = allowed_environment(db, user, spec.default_environment_id)
+    preferred = recommended_environment(db) if not spec.default_environment_id else None
+    env = allowed_environment(db, user, spec.default_environment_id or (preferred.id if preferred else None))
     if spec.max_gpus > settings.gpu_count:
         raise HTTPException(422, "max_gpus 超过集群 GPU 数量")
     target = User(
@@ -428,7 +468,7 @@ def update_user(db: Session, actor: User, user_id: str, changes: dict):
             if db.scalar(
                 select(Workload.id).where(
                     Workload.user_id == target.id,
-                    Workload.status.in_(["PENDING", *ACTIVE]),
+                    Workload.status.in_(["AWAITING_APPROVAL", "PENDING", *ACTIVE]),
                 )
             ) or runtime.get(runtime.name("workspace", target.username)):
                 raise HTTPException(
@@ -487,6 +527,34 @@ def reset_password(
     return {"ok": True}
 
 
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    deletion_lock(db)
+    target = lock_user(db, target_user(db, user, user_id))
+    if target.id == user.id:
+        raise HTTPException(422, "不能删除当前管理员账号")
+    if target.enabled:
+        raise HTTPException(409, "请先停用账号再删除")
+    idle_user(db, target)
+    for container in runtime.managed():
+        if container.labels.get("lab.user") == target.username:
+            runtime.remove(container)
+    runtime.remove_python_volume(target)
+    storage.delete_user_data(target.username, ("workspace", "results", "scratch"))
+    for resource in db.scalars(select(Workload).where(Workload.user_id == target.id)):
+        Path(settings.runtime_root, "logs/jobs", f"{resource.id}.log").unlink(missing_ok=True)
+    db.execute(delete(Workload).where(Workload.user_id == target.id))
+    db.execute(delete(Workspace).where(Workspace.user_id == target.id))
+    db.execute(delete(AuthSession).where(AuthSession.user_id == target.id))
+    db.execute(delete(EnvVar).where(EnvVar.scope == target.id))
+    # Preserve audit history after its former actor account is gone.
+    db.execute(update(AuditEvent).where(AuditEvent.user_id == target.id).values(user_id=None))
+    audit(db, user, "user.delete", "user", target.id, {"username": target.username})
+    db.delete(target)
+    db.commit()
+    return {"ok": True}
+
+
 def workspace_payload(db: Session, target: User):
     workspace = db.get(Workspace, target.id)
     container = runtime.get(runtime.name("workspace", target.username))
@@ -516,7 +584,9 @@ def workspace(
 
 
 def workspace_action(db: Session, actor: User, target: User, action: str):
-    db.scalar(select(User).where(User.id == target.id).with_for_update())
+    target = lock_user(db, target)
+    if not target:
+        raise HTTPException(404, "用户不存在")
     container = runtime.get(runtime.name("workspace", target.username))
     record = db.get(Workspace, target.id)
     if action in {"stop", "restart"}:
@@ -562,6 +632,25 @@ def manage_workspace(
     return workspace_action(db, user, target_user(db, user, user_id), action)
 
 
+@app.delete("/api/workspace")
+def delete_workspace(user_id: str | None = None, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    deletion_lock(db)
+    target = lock_user(db, target_user(db, user, user_id))
+    idle_user(db, target)
+    container = runtime.get(runtime.name("workspace", target.username))
+    if container:
+        runtime.remove(container)
+    runtime.remove_python_volume(target)
+    storage.delete_user_data(target.username, ("workspace", "scratch"))
+    record = db.get(Workspace, target.id)
+    record.state, record.container_id = "STOPPED", None
+    record.last_stopped_at = now()
+    runtime.provision(target)
+    audit(db, user, "workspace.delete", "user", target.id, {"username": target.username})
+    db.commit()
+    return {"ok": True}
+
+
 def list_workloads(db: Session, user: User, kind: str):
     query = select(Workload).where(Workload.kind == kind)
     if user.role != "ADMIN":
@@ -581,6 +670,9 @@ def jobs(user: User = Depends(current_user), db: Session = Depends(get_db)):
 def add_job(
     spec: JobSpec, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
+    user = lock_user(db, user)
+    if not user or not user.enabled:
+        raise HTTPException(401, "用户已停用")
     validate_resources(user, spec)
     spec.environment_id = allowed_environment(db, user, spec.environment_id).id
     resource = scheduler.submit_train(db, user, spec)
@@ -614,10 +706,11 @@ def retry_job(
     old = accessible_resource(db, user, resource_id, "train")
     if old.status not in TERMINAL:
         raise HTTPException(409, "任务结束后才能重试")
-    owner = db.get(User, old.user_id)
-    if not owner.enabled:
+    owner = lock_user(db, db.get(User, old.user_id))
+    if not owner or not owner.enabled:
         raise HTTPException(422, "用户已停用")
     spec = JobSpec(
+        gpu_indices=old.requested_gpu_indices_json,
         **{
             key: getattr(old, key)
             for key in (
@@ -668,6 +761,9 @@ def debug_sessions(user: User = Depends(current_user), db: Session = Depends(get
 def add_debug(
     spec: DebugSpec, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
+    user = lock_user(db, user)
+    if not user or not user.enabled:
+        raise HTTPException(401, "用户已停用")
     validate_resources(user, spec)
     spec.environment_id = allowed_environment(db, user, spec.environment_id).id
     resource = scheduler.start_debug(db, user, spec)
@@ -694,9 +790,74 @@ def debug_logs(
     return log_payload(accessible_resource(db, user, resource_id, "debug"))
 
 
+def decide_debug(db: Session, actor: User, resource_id: str, approved: bool, note: str):
+    deletion_lock(db)
+    resource = db.scalar(select(Workload).where(Workload.id == resource_id).with_for_update()
+                         .execution_options(populate_existing=True))
+    if not resource or resource.kind != "debug":
+        raise HTTPException(404, "调试申请不存在")
+    if resource.status != "AWAITING_APPROVAL" or resource.cancel_requested:
+        raise HTTPException(409, "该申请已处理或已请求取消")
+    owner = lock_user(db, db.get(User, resource.user_id))
+    if approved:
+        if not owner.enabled:
+            raise HTTPException(409, "用户已停用")
+        spec = DebugSpec(environment_id=resource.environment_id, requested_gpus=resource.requested_gpus,
+                         gpu_indices=resource.requested_gpu_indices_json, requested_cpus=resource.requested_cpus,
+                         requested_ram_mb=resource.requested_ram_mb, time_limit_seconds=resource.time_limit_seconds,
+                         approval_reason=resource.approval_reason)
+        validate_resources(owner, spec)
+        allowed_environment(db, owner, spec.environment_id)
+        resource.status, resource.approval_status = "PENDING", "APPROVED"
+    else:
+        resource.status, resource.approval_status = "REJECTED", "REJECTED"
+        resource.finished_at = now()
+    resource.approved_by, resource.approved_at, resource.approval_note = actor.id, now(), note
+    audit(db, actor, "debug.approve" if approved else "debug.reject", "debug", resource.id,
+          {"hours": resource.time_limit_seconds / 3600, "note": note})
+    db.commit()
+    return public_workload(resource, db)
+
+
+@app.post("/api/debug/{resource_id}/approve")
+def approve_debug(resource_id: str, spec: ApprovalDecision, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return decide_debug(db, user, resource_id, True, spec.note)
+
+
+@app.post("/api/debug/{resource_id}/reject")
+def reject_debug(resource_id: str, spec: ApprovalDecision, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return decide_debug(db, user, resource_id, False, spec.note)
+
+
+def delete_workload(db: Session, user: User, resource_id: str, kind: str):
+    deletion_lock(db)
+    resource = accessible_resource(db, user, resource_id, kind)
+    if resource.status not in TERMINAL:
+        raise HTTPException(409, "任务结束或停止后才能删除记录")
+    container = runtime.get(runtime.name(kind, resource.id))
+    if container:
+        runtime.remove(container)
+    Path(settings.runtime_root, "logs/jobs", f"{resource.id}.log").unlink(missing_ok=True)
+    audit(db, user, f"{kind}.delete", kind, resource.id, {"username": db.get(User, resource.user_id).username})
+    db.delete(resource)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/jobs/{resource_id}")
+def delete_job(resource_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return delete_workload(db, user, resource_id, "train")
+
+
+@app.delete("/api/debug/{resource_id}")
+def delete_debug(resource_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return delete_workload(db, user, resource_id, "debug")
+
+
 @app.get("/api/resources/gpus")
 def gpus(user: User = Depends(current_user), db: Session = Depends(get_db)):
     slots = []
+    telemetry = read_telemetry(Path(settings.runtime_root, "logs/gpu-telemetry.json"), settings.scheduler_backend)
     for slot in scheduler.list_resources(db):
         owner = db.get(Workload, slot.owner_id) if slot.owner_id else None
         slots.append(
@@ -707,11 +868,15 @@ def gpus(user: User = Depends(current_user), db: Session = Depends(get_db)):
                 "owner_id": slot.owner_id,
                 "username": db.get(User, owner.user_id).username if owner else None,
                 "started_at": owner.started_at if owner else None,
+                "metrics": telemetry["gpus"].get(str(slot.gpu_index)),
+                "external_busy": slot.state == "FREE" and telemetry["gpus"].get(str(slot.gpu_index), {}).get("compute_process_count", 0) > 0,
             }
         )
     heartbeat = Path(settings.runtime_root, "logs/scheduler-heartbeat")
     online = heartbeat.exists() and time.time() - heartbeat.stat().st_mtime < 30
-    return {"mode": settings.scheduler_backend, "worker_online": online, "slots": slots}
+    return {"mode": settings.scheduler_backend, "worker_online": online, "slots": slots,
+            "telemetry_status": telemetry["status"], "telemetry_sampled_at": telemetry["sampled_at"],
+            "telemetry_error": telemetry["error"]}
 
 
 @app.get("/api/resources/queue")
@@ -719,7 +884,7 @@ def queue(user: User = Depends(current_user), db: Session = Depends(get_db)):
     query = (
         select(Workload)
         .where(Workload.status.in_(["PENDING", *ACTIVE]))
-        .order_by(Workload.created_at, Workload.id)
+        .order_by(func.coalesce(Workload.approved_at, Workload.created_at), Workload.id)
     )
     return [
         {
@@ -727,6 +892,7 @@ def queue(user: User = Depends(current_user), db: Session = Depends(get_db)):
             "kind": item.kind,
             "status": item.status,
             "requested_gpus": item.requested_gpus,
+            "requested_gpu_indices": item.requested_gpu_indices_json,
             "username": db.get(User, item.user_id).username,
             "created_at": item.created_at,
         }
@@ -737,8 +903,10 @@ def queue(user: User = Depends(current_user), db: Session = Depends(get_db)):
 @app.get("/api/environments")
 def environments(user: User = Depends(current_user), db: Session = Depends(get_db)):
     local_images = {image.id for image in runtime.client.images.list()}
+    preferred = recommended_environment(db)
     return [
-        {**public_environment(item), "available": item.image in local_images}
+        {**public_environment(item), "available": item.image in local_images,
+         "recommended": item.id == (preferred.id if preferred else None)}
         for item in db.scalars(select(Environment).order_by(Environment.created_at))
         if user.role == "ADMIN" or item.enabled
     ]
@@ -750,12 +918,13 @@ def add_environment(
     user: User = Depends(admin_user),
     db: Session = Depends(get_db),
 ):
+    db.execute(text("SELECT pg_advisory_xact_lock(719103)"))
     image = runtime.client.images.get(spec.image)
     # Store immutable Docker content ID, so repointing a tag never silently upgrades users.
     env = Environment(**spec.model_dump(exclude={"image"}), image=image.id)
     db.add(env)
     db.flush()
-    # Keep an explicit tag: Docker Desktop may discard untagged manifest indexes
+    # Keep an explicit tag: Docker may discard untagged manifest indexes
     # when the mutable development build tag is replaced.
     image.tag(f"lab-env-{env.id}", tag="pinned")
     audit(db, user, "environment.create", "environment", env.id)
@@ -777,6 +946,72 @@ def patch_environment(
     audit(db, user, "environment.update", "environment", env.id)
     db.commit()
     return public_environment(env)
+
+
+@app.delete("/api/environments/{env_id}")
+def delete_environment(env_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    deletion_lock(db)
+    env = db.get(Environment, env_id)
+    if not env:
+        raise HTTPException(404, "环境不存在")
+    if (db.scalar(select(User.id).where(User.default_environment_id == env.id).limit(1))
+        or db.scalar(select(Workload.id).where(Workload.environment_id == env.id).limit(1))):
+        raise HTTPException(409, "环境仍被用户或任务记录引用")
+    audit(db, user, "environment.delete", "environment", env.id, {"name": env.name})
+    db.delete(env)
+    db.commit()
+    return {"ok": True}
+
+
+def image_inventory(db: Session) -> list[dict]:
+    templates = list(db.scalars(select(Environment)))
+    containers = runtime.client.containers.list(all=True)
+    protected = set()
+    for name in (settings.base_image, settings.torch_image):
+        try:
+            protected.add(runtime.client.images.get(name).id)
+        except NotFound:
+            pass
+    result = []
+    for image in runtime.client.images.list():
+        reasons = []
+        if image.id in protected:
+            reasons.append("集群默认镜像")
+        used_templates = [e.name for e in templates if e.image == image.id]
+        if used_templates:
+            reasons.append("环境模板: " + ", ".join(used_templates))
+        used_containers = [c.name for c in containers if c.attrs.get("Image") == image.id]
+        if used_containers:
+            reasons.append("容器: " + ", ".join(used_containers))
+        result.append({"id": image.id, "tags": image.tags, "size": image.attrs.get("Size", 0),
+                       "blocked_reasons": reasons})
+    return result
+
+
+@app.get("/api/admin/images")
+def docker_images(user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return image_inventory(db)
+
+
+@app.delete("/api/admin/images/{image_id}")
+def delete_docker_image(image_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        raise HTTPException(422, "请使用完整的镜像 SHA256 ID")
+    deletion_lock(db)
+    item = next((i for i in image_inventory(db) if i["id"] == image_id), None)
+    if not item:
+        raise HTTPException(404, "镜像不存在")
+    if item["blocked_reasons"]:
+        raise HTTPException(409, "镜像仍在使用: " + "; ".join(item["blocked_reasons"]))
+    # Remove the explicitly confirmed tags; never force an in-use image away.
+    for reference in item["tags"] or [image_id]:
+        try:
+            runtime.client.images.remove(reference, force=False, noprune=True)
+        except NotFound:
+            pass
+    audit(db, user, "image.delete", "image", image_id, {"tags": item["tags"]})
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/settings/env")

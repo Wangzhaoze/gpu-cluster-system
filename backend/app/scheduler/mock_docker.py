@@ -1,18 +1,22 @@
 from datetime import timedelta
 import logging
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from ..models import Environment, GpuSlot, User, Workload, now, new_id
 from ..schemas import JobSpec, DebugSpec
 from ..docker_runtime import runtime
 from ..config import settings
 from ..storage import storage
+from ..gpu_telemetry import read_telemetry
+from pathlib import Path
 from .base import ACTIVE, TERMINAL
 
 logger = logging.getLogger(__name__)
 
 
-def first_fit(free: list[int], count: int) -> list[int] | None:
+def first_fit(free: list[int], count: int, selected: list[int] | None = None) -> list[int] | None:
+    if selected is not None:
+        return list(selected) if len(selected) == count and set(selected).issubset(free) else None
     return sorted(free)[:count] if len(free) >= count else None
 
 
@@ -22,20 +26,28 @@ class MockDockerScheduler:
     def submit_train(self, db: Session, user: User, spec: JobSpec) -> Workload:
         data = spec.model_dump()
         env = data.pop("env")
-        resource = Workload(kind="train", user_id=user.id, env_json=env, **data)
+        selected = data.pop("gpu_indices")
+        resource = Workload(kind="train", user_id=user.id, env_json=env,
+                            requested_gpu_indices_json=selected, **data)
         db.add(resource)
         db.flush()
         return resource
 
     def start_debug(self, db: Session, user: User, spec: DebugSpec) -> Workload:
         resource_id = new_id()
+        data = spec.model_dump()
+        selected = data.pop("gpu_indices")
+        approval = spec.time_limit_seconds > 36000
         resource = Workload(
             id=resource_id,
             kind="debug",
             user_id=user.id,
             route_path=f"/debug/{resource_id}/",
             command="code-server",
-            **spec.model_dump(),
+            status="AWAITING_APPROVAL" if approval else "PENDING",
+            approval_status="PENDING" if approval else "NOT_REQUIRED",
+            requested_gpu_indices_json=selected,
+            **data,
         )
         db.add(resource)
         db.flush()
@@ -67,6 +79,8 @@ class MockDockerScheduler:
             runtime.capture_log(resource, container)
             resource.exit_code = container.attrs["State"].get("ExitCode")
         resource.status = status
+        if resource.approval_status == "PENDING":
+            resource.approval_status = "CANCELLED"
         resource.finished_at = now()
         resource.error_message = error
         for slot in db.scalars(select(GpuSlot).where(GpuSlot.owner_id == resource.id)):
@@ -112,6 +126,9 @@ class MockDockerScheduler:
         db.commit()
 
     def launch(self, db: Session, resource: Workload):
+        if resource.kind == "debug" and resource.time_limit_seconds > 36000 and resource.approval_status != "APPROVED":
+            self.finish(db, resource, None, "FAILED", "Long debug requires administrator approval")
+            return
         user = db.get(User, resource.user_id)
         env = db.get(Environment, resource.environment_id)
         # Disabled users/images must not start queued work.
@@ -160,8 +177,8 @@ class MockDockerScheduler:
         for resource in list(
             db.scalars(
                 select(Workload)
-                .where(Workload.status.in_(["PENDING", *ACTIVE]))
-                .order_by(Workload.created_at, Workload.id)
+                .where(Workload.status.in_(["AWAITING_APPROVAL", "PENDING", *ACTIVE]))
+                .order_by(func.coalesce(Workload.approved_at, Workload.created_at), Workload.id)
             )
         ):
             container = runtime.get(runtime.name(resource.kind, resource.id))
@@ -206,7 +223,7 @@ class MockDockerScheduler:
             db.scalars(
                 select(Workload)
                 .where(Workload.status == "PENDING")
-                .order_by(Workload.created_at, Workload.id)
+                .order_by(func.coalesce(Workload.approved_at, Workload.created_at), Workload.id)
             )
         )
         for resource in pending:
@@ -215,7 +232,13 @@ class MockDockerScheduler:
                 for slot in self.list_resources(db)
                 if slot.state == "FREE"
             ]
-            assigned = first_fit(free, resource.requested_gpus)
+            if self.real_gpu and resource.requested_gpus:
+                telemetry = read_telemetry(Path(settings.runtime_root, "logs/gpu-telemetry.json"), settings.scheduler_backend)
+                if telemetry["status"] != "online":
+                    break  # Never guess physical availability from a stale sample.
+                free = [i for i in free if str(i) in telemetry["gpus"]
+                        and telemetry["gpus"][str(i)].get("compute_process_count", 0) == 0]
+            assigned = first_fit(free, resource.requested_gpus, resource.requested_gpu_indices_json)
             user = db.get(User, resource.user_id)
             used = sum(
                 len(other.assigned_gpus_json)

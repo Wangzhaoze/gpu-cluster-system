@@ -1,4 +1,4 @@
-ARG LOCAL_CUDA_IMAGE=lab-local-cuda:12.8.1
+ARG LOCAL_CUDA_IMAGE=nvidia/cuda:12.8.1-runtime-ubuntu22.04
 FROM ${LOCAL_CUDA_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive NVIDIA_VISIBLE_DEVICES=void PGDATA=/var/lib/postgresql/data
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-14 ca-certificates \

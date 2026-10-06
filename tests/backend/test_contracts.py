@@ -10,7 +10,7 @@ from app.schemas import (
     clean_credential,
 )
 from app.scheduler.mock_docker import first_fit, MockDockerScheduler
-from app.storage import WindowsDockerStorage
+from app.storage import DockerStorage
 
 
 @pytest.mark.parametrize(
@@ -82,7 +82,7 @@ def test_reserved_environment(key):
 
 
 def test_mount_contract():
-    mounts = WindowsDockerStorage().mounts("student01")
+    mounts = DockerStorage().mounts("student01")
     by_target = {m["Target"]: m for m in mounts}
     assert by_target["/datasets"]["ReadOnly"]
     assert by_target["/opt/user-env"]["Type"] == "volume"

@@ -11,6 +11,7 @@ x-app-env: &app-env
   LAB_RUNTIME_ROOT: /runtime
   DATASET_HOST_PATH: ${DATASET_HOST_PATH}
   LAB_BASE_IMAGE: ${LAB_BASE_IMAGE}
+  LAB_TORCH_IMAGE: ${LAB_TORCH_IMAGE:-lab-torch-dev:2.7.1-cu128}
   LAB_SHM_SIZE: ${LAB_SHM_SIZE:-2g}
   SCHEDULER_BACKEND: ${SCHEDULER_BACKEND:-mock-docker}
   MOCK_GPU_COUNT: ${MOCK_GPU_COUNT:-5}
@@ -101,6 +102,35 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on: [backend, frontend]
+    restart: unless-stopped
+    networks: [lab-net]
+
+  gpu-monitor:
+    image: ${LAB_BASE_IMAGE}
+    pull_policy: never
+    profiles: [gpu]
+    entrypoint: [python3, /monitor.py]
+    user: '${LAB_MONITOR_UID:-1000}:${LAB_MONITOR_GID:-1000}'
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: utility
+      NVIDIA_VISIBLE_DEVICES: all
+      PYTHONPATH: /app
+    gpus: all
+    # NVML filters process lists by PID visibility. Hardware counters alone
+    # cannot distinguish host jobs from platform allocations.
+    pid: host
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    volumes:
+      - ./infra/gpu-monitor.py:/monitor.py:ro
+      - ./backend/app/gpu_telemetry.py:/app/gpu_telemetry.py:ro
+      - ${LAB_HOST_ROOT}/logs:/telemetry
+    healthcheck:
+      test: [CMD, python3, -c, 'import json,time,pathlib; p=pathlib.Path("/telemetry/gpu-telemetry.json"); assert time.time()-p.stat().st_mtime<15 and json.loads(p.read_text())["error"] is None']
+      interval: 5s
+      timeout: 3s
+      retries: 12
     restart: unless-stopped
     networks: [lab-net]
 
