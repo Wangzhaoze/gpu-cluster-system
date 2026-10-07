@@ -15,7 +15,7 @@ class StorageProvider(Protocol):
 
 
 class DockerStorage:
-    """Host paths are configuration, never user input; Linux venv lives in a volume."""
+    """Host paths are configuration; per-user Linux state lives in named volumes."""
 
     def __init__(self):
         self._usage_cache = {}
@@ -53,6 +53,7 @@ class DockerStorage:
                 ),
                 Mount(f"/home/{username}/dataset", paths["datasets"], type="bind", read_only=True),
                 Mount("/opt/user-env", f"lab_pyenv_{username}", type="volume"),
+                Mount("/opt/user-state", f"lab_userstate_{username}", type="volume"),
             ]
         )
         return mounts

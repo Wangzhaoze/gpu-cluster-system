@@ -18,26 +18,38 @@ class DockerRuntime:
 
     def provision(self, user: User):
         storage.provision(user.username)
-        self.client.volumes.create(
-            f"lab_pyenv_{user.username}",
-            labels={
-                "lab.managed": "true",
-                "lab.project": settings.project,
-                "lab.user": user.username,
-            },
-        )
+        for name, kind in (
+            (f"lab_pyenv_{user.username}", "python-env"),
+            (f"lab_userstate_{user.username}", "user-state"),
+        ):
+            self.client.volumes.create(
+                name,
+                labels={
+                    "lab.managed": "true",
+                    "lab.project": settings.project,
+                    "lab.user": user.username,
+                    "lab.volume": kind,
+                },
+            )
 
     def name(self, kind: str, resource_id: str) -> str:
         return f"lab-{kind}-{resource_id}"
 
     def remove_python_volume(self, user: User):
-        try:
-            volume = self.client.volumes.get(f"lab_pyenv_{user.username}")
-        except NotFound:
-            return
-        if (volume.attrs.get("Labels") or {}).get("lab.project") != settings.project:
-            raise RuntimeError("Python volume belongs to another project")
-        volume.remove(force=False)
+        # This method is used only by destructive workspace/user reset paths.
+        # Keep the historical name for API compatibility, but remove all
+        # per-user named volumes so editor credentials are not orphaned.
+        for name in (
+            f"lab_pyenv_{user.username}",
+            f"lab_userstate_{user.username}",
+        ):
+            try:
+                volume = self.client.volumes.get(name)
+            except NotFound:
+                continue
+            if (volume.attrs.get("Labels") or {}).get("lab.project") != settings.project:
+                raise RuntimeError(f"Volume belongs to another project: {name}")
+            volume.remove(force=False)
 
     def get(self, name: str):
         try:
@@ -85,6 +97,16 @@ class DockerRuntime:
                 "LAB_UID": str(user.uid_hint),
                 "LAB_GID": str(user.uid_hint),
                 "VIRTUAL_ENV": "/opt/user-env/venv",
+                # Platform-managed persistent user state. Keep these after user/task
+                # overrides so Workspace, Debug and Train cannot accidentally diverge.
+                "CODEX_HOME": "/opt/user-state/codex",
+                "XDG_CONFIG_HOME": "/opt/user-state/xdg/config",
+                "XDG_DATA_HOME": "/opt/user-state/xdg/local/share",
+                "XDG_STATE_HOME": "/opt/user-state/xdg/local/state",
+                "XDG_CACHE_HOME": "/scratch/xdg-cache",
+                "HISTFILE": "/opt/user-state/shell/bash_history",
+                "GIT_CONFIG_GLOBAL": "/opt/user-state/git/config",
+                "NPM_CONFIG_PREFIX": "/opt/user-state/npm",
                 "LAB_ASSIGNED_GPUS": ",".join(map(str, gpus)),
                 "CUDA_VISIBLE_DEVICES": ",".join(
                     map(str, range(len(gpus)) if real_gpu else gpus)
@@ -155,9 +177,11 @@ class DockerRuntime:
                 "--abs-proxy-base-path",
                 route.rstrip("/"),
                 "--user-data-dir",
-                f"/workspace/.lab/code-server/{kind}-{resource_id}",
+                "/opt/user-state/code-server/user-data",
                 "--extensions-dir",
-                "/workspace/.lab/extensions",
+                "/opt/user-state/code-server/extensions",
+                "--session-socket",
+                f"/tmp/code-server-{kind}-{resource_id}.sock",
                 "/workspace",
             ]
         else:
