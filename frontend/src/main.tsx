@@ -160,19 +160,28 @@ function Field({
 const metric = (value: number | null | undefined, unit: string) =>
   value == null ? "—" : Math.round(value * 10) / 10 + unit;
 
-function GpuPicker({ slots, max, initial }: { slots: Slot[]; max: number; initial: number }) {
+function GpuPicker({ slots, max, initial, telemetryReady }: { slots: Slot[]; max: number; initial: number; telemetryReady: boolean }) {
   const [mode, setMode] = useState(initial && max ? "auto" : "cpu");
   const [count, setCount] = useState(Math.min(initial || 1, max));
   const [selected, setSelected] = useState<number[]>([]);
-  const gpuCount = mode === "cpu" ? 0 : mode === "manual" ? selected.length : count;
+  const available = (s: Slot) => telemetryReady && s.state === "FREE" && !s.external_busy;
+  const selectedAvailable = selected.filter((i) => slots.some((s) => s.gpu_index === i && available(s))).slice(0, max);
+  useEffect(() => {
+    setSelected((current) => {
+      const next = current.filter((i) => slots.some((s) => s.gpu_index === i && telemetryReady && s.state === "FREE" && !s.external_busy)).slice(0, max);
+      return next.length === current.length ? current : next;
+    });
+  }, [slots, max, telemetryReady]);
+  useEffect(() => { setCount((current) => Math.min(Math.max(current, 1), max)); }, [max]);
+  const gpuCount = mode === "cpu" ? 0 : mode === "manual" ? selectedAvailable.length : Math.min(count, max);
   return <div className="gpu-picker">
     <Field label="显卡分配">
       <select value={mode} onChange={(e) => {
         setMode(e.target.value);
         if (e.target.value === "auto" && count < 1 && max) setCount(1);
-        if (e.target.value === "manual" && !selected.length) {
-          const first = slots.find((s) => s.state === "FREE" && !s.external_busy) || slots[0];
-          if (first && max) setSelected([first.gpu_index]);
+        if (e.target.value === "manual" && !selectedAvailable.length) {
+          const first = slots.find(available);
+          setSelected(first && max ? [first.gpu_index] : []);
         }
       }}>
         <option value="cpu">仅 CPU</option>
@@ -182,17 +191,22 @@ function GpuPicker({ slots, max, initial }: { slots: Slot[]; max: number; initia
     </Field>
     <input type="hidden" name="gpu_mode" value={mode} />
     <input type="hidden" name="gpu" value={gpuCount} />
-    <input type="hidden" name="gpu_indices" value={JSON.stringify(mode === "manual" ? selected : null)} />
+    <input type="hidden" name="gpu_indices" value={JSON.stringify(mode === "manual" ? selectedAvailable : null)} />
     {mode === "auto" && <Field label="GPU 数量"><input type="number" min="1" max={max}
       value={count} required onChange={(e) => setCount(Number(e.target.value))} /></Field>}
-    {mode === "manual" && <div className="gpu-choices">{slots.map((s) => <label key={s.gpu_index}>
-      <input type="checkbox" checked={selected.includes(s.gpu_index)}
-        disabled={!selected.includes(s.gpu_index) && selected.length >= max}
-        onChange={(e) => setSelected(e.target.checked ? [...selected, s.gpu_index] : selected.filter((i) => i !== s.gpu_index))} />
-      <span>GPU {s.gpu_index} · {s.state !== "FREE" ? "平台占用" : s.external_busy ? "外部占用" : "空闲"}
-        <small>{metric(s.metrics?.utilization_percent, "%")} · {metric(s.metrics?.temperature_c, "°C")}</small></span>
-    </label>)}</div>}
-
+    {mode === "manual" && <>
+      <div className="gpu-choices">{slots.map((s) => {
+        const checked = selectedAvailable.includes(s.gpu_index);
+        const disabled = !available(s) || (!checked && selectedAvailable.length >= max);
+        return <label key={s.gpu_index} className={disabled ? "disabled" : ""}>
+          <input type="checkbox" checked={checked} disabled={disabled}
+            onChange={(e) => setSelected(e.target.checked ? [...selectedAvailable, s.gpu_index] : selectedAvailable.filter((i) => i !== s.gpu_index))} />
+          <span>GPU {s.gpu_index} · {s.state !== "FREE" ? "平台占用" : s.external_busy ? "外部占用" : !telemetryReady ? "监控暂不可用" : "空闲"}
+            <small>{metric(s.metrics?.utilization_percent, "%")} · {metric(s.metrics?.temperature_c, "°C")}</small></span>
+        </label>;
+      })}</div>
+      <p className="muted">已选择 {selectedAvailable.length} 张 · 上限 {max} 张</p>
+    </>}
   </div>;
 }
 
@@ -384,6 +398,7 @@ function App() {
       (user?.role === "ADMIN" || e.id === user?.default_environment_id),
   );
   const activeDebug = debug.filter((d) => !terminal.includes(d.status));
+  const pendingTrainingCount = queue.filter((q) => q.kind === "train" && q.status === "PENDING").length;
   const nav = [
     ["dashboard", "总览"],
     ["workspace", user?.role === "ADMIN" ? "宿主机" : "工作区"],
@@ -518,7 +533,7 @@ function App() {
             >
               <Icon name={id} />
               {label}
-              {id === "jobs" && queue.length > 0 && <b>{queue.length}</b>}
+              {id === "jobs" && pendingTrainingCount > 0 && <b title={pendingTrainingCount + " 个训练任务排队"}>{pendingTrainingCount}</b>}
             </button>
           ))}
         </nav>
@@ -879,7 +894,7 @@ function App() {
                         required
                       />
                     </Field>
-                    <GpuPicker slots={resources.slots} max={Math.min(user.max_gpus, resources.slots.length)} initial={0} />
+                    <GpuPicker slots={resources.slots} max={Math.min(user.max_gpus, resources.slots.length)} initial={0} telemetryReady={resources.mode !== "local-gpu-docker" || resources.telemetry_status === "online"} />
                     <Field label="CPU 核数">
                       <input
                         name="cpu"
@@ -1051,7 +1066,7 @@ function App() {
                         ))}
                       </select>
                     </Field>
-                    <GpuPicker slots={resources.slots} max={Math.min(1, user.max_gpus, resources.slots.length)} initial={1} />
+                    <GpuPicker slots={resources.slots} max={Math.min(user.max_gpus, resources.slots.length)} initial={1} telemetryReady={resources.mode !== "local-gpu-docker" || resources.telemetry_status === "online"} />
                     <Field label="会话时长（小时）">
                       <input name="hours" type="number" min="0.5" max="168" step="0.5"
                         value={debugHours} onChange={(e) => setDebugHours(Number(e.target.value))} required />
@@ -1808,7 +1823,7 @@ function App() {
           </footer>
         </main>
       </div>
-      {workloadEditing && user.role === "ADMIN" && <WorkloadEditor item={workloadEditing} busy={busy} close={() => setWorkloadEditing(null)} save={data => act(async () => { await api("/" + (workloadEditing.kind === "debug" ? "debug" : "jobs") + "/" + workloadEditing.id, "PATCH", data); setWorkloadEditing(null); }, "任务已更新")} />}
+      {workloadEditing && user.role === "ADMIN" && <WorkloadEditor item={workloadEditing} maxGpus={Math.min(users.find((u) => u.id === workloadEditing.user_id)?.max_gpus || 0, resources.slots.length)} busy={busy} close={() => setWorkloadEditing(null)} save={data => act(async () => { await api("/" + (workloadEditing.kind === "debug" ? "debug" : "jobs") + "/" + workloadEditing.id, "PATCH", data); setWorkloadEditing(null); }, "任务已更新")} />}
       {logTarget && (
         <div className="modal-backdrop" onClick={() => setLogTarget(null)}>
           <section

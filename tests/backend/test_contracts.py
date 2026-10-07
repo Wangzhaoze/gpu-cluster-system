@@ -110,7 +110,7 @@ def test_cancel_does_not_mutate_terminal_state():
 
 def test_resource_validation():
     with pytest.raises(ValidationError):
-        DebugSpec(requested_gpus=2)
+        DebugSpec(requested_gpus=65)
     with pytest.raises(ValidationError):
         UserCreate(
             username="../../escape", display_name="bad", password="long-password"

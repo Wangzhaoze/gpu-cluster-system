@@ -81,3 +81,20 @@ def test_stale_or_mock_telemetry_never_looks_live(tmp_path):
     stale = read_telemetry(path, 'local-gpu-docker')
     assert stale['status'] == 'stale' and not stale['gpus']
     assert read_telemetry(path, 'mock-docker')['status'] == 'mock'
+
+
+@pytest.mark.parametrize('count', [1, 2, 3])
+def test_debug_accepts_multiple_selected_gpus_within_member_limit(count):
+    spec = DebugSpec(requested_gpus=count, gpu_indices=list(range(count)))
+    validate_resources(SimpleNamespace(max_gpus=3, max_debug_hours=10), spec)
+    assert spec.gpu_indices == list(range(count))
+
+
+@pytest.mark.parametrize('spec_type', [JobSpec, DebugSpec])
+def test_gpu_request_enforces_member_and_cluster_limits(spec_type):
+    values = {'command': 'true'} if spec_type is JobSpec else {}
+    spec = spec_type(requested_gpus=3, gpu_indices=[0, 1, 2], **values)
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        validate_resources(SimpleNamespace(max_gpus=2, max_debug_hours=10), spec)
+    assert error.value.status_code == 422

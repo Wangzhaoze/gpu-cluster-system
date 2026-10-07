@@ -112,7 +112,7 @@ class JobSpec(GpuSelection):
 
 class DebugSpec(GpuSelection):
     environment_id: str | None = None
-    requested_gpus: int = Field(default=1, ge=0, le=1)
+    requested_gpus: int = Field(default=1, ge=0, le=64)
     requested_cpus: int = Field(default=1, ge=1, le=32)
     requested_ram_mb: int = Field(default=2048, ge=256, le=65536)
     time_limit_seconds: int = Field(default=1800, ge=5, le=604800)

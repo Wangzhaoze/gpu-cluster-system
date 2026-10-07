@@ -69,11 +69,11 @@ The monitor starts automatically with `./scripts/lab.sh up --remote --no-build` 
 
 1. Log in as administrator and open **用户管理**.
 2. Enter a username such as `student01`, display name and a generated password. Select role **成员**.
-3. Select the **CUDA 12.8 · nvcc · PyTorch 2.7.1** fixed environment, set **GPU 上限** to **1**, and **Debug 免审批上限** to **10 小时**.
+3. Select the **CUDA 12.8 · nvcc · PyTorch 2.7.1** fixed environment, set **GPU 上限** to **1** for single-card use or **2/3** for multiple cards, and **Debug 免审批上限** to **10 小时**.
 4. Click **创建用户**, then **复制登录信息** and give the login details to the student.
-5. The student logs in through the public link, opens **在线调试**, chooses automatic allocation or **指定显卡**, checks one GPU, and enters the duration in hours. For ten hours or less, click **开启调试**. Wait for **运行中**, then open **VS Code ↗**.
+5. The student logs in through the public link, opens **在线调试**, chooses automatic allocation or **指定显卡**, checks one or more free GPUs within the account quota, and enters the duration in hours. For ten hours or less, click **开启调试**. Wait for **运行中**, then open **VS Code ↗**.
 
-Training also supports automatic allocation, selecting multiple cards up to the user's quota, or CPU-only mode. Selections are persisted and reused by retries. API requests use `gpu_indices`, e.g. `requested_gpus=1, gpu_indices=[2]`; omit or send `null` for automatic allocation. A requested card is never silently substituted. Physical GPU indices correspond to the dashboard; a one-GPU container sees its assigned GPU as CUDA device 0.
+Both debug and training support automatic allocation, selecting one or multiple cards up to the user's quota and the cluster size, or CPU-only mode. Platform-occupied and externally occupied cards are grey and disabled in the selector. Polling removes a selected card if it becomes occupied; submitting an empty manual selection is rejected. Administrator workload edits use the owner's quota. If a card becomes busy after submission, the scheduler retains the request and waits without substituting a card. Selections are persisted and reused by retries. API requests use `gpu_indices`, e.g. `requested_gpus=1, gpu_indices=[2]`; omit or send `null` for automatic allocation. A requested card is never silently substituted. Physical GPU indices correspond to the dashboard; assigned GPUs appear inside a container as consecutive CUDA devices starting at 0.
 
 For debug beyond ten hours (up to seven days), enter a reason and click **提交审批申请**. The session stays **等待管理员审批**, occupies no GPU/container and does not block the running queue. An administrator opens **在线调试**, reviews the duration/card/reason and clicks **批准** or **拒绝**, optionally recording a note. Only approval enters the FIFO, ordered by approval time. Students can **撤回申请** before launch. Each request needs its own approval; approval is not a reusable account entitlement. The duration starts when the container starts. Expiry or **停止** releases the GPU; closing the browser does not cancel the session. For PyTorch work, choose at least 4096 MB of RAM.
 
@@ -144,7 +144,7 @@ Admin **编辑** accepts command/work directory/output name (training), GPU sele
 
 **环境 → 环境变量** provides name/value add, edit and delete. Administrators select global or individual member scope. Members can edit/delete their own values and read shared global values. Changes refresh across role interfaces every three seconds and apply to the next created container. Precedence remains task override, personal, global, default; deleting a personal value restores a same-name global value for future containers. The unused **密钥/启用** controls are removed; stored compatibility flags remain intact for older API clients. Variable audit events contain keys/scopes, never values.
 
-**远程访问** contains the current link/status/copy action. The last navigation item, **帮助**, collects account, editor, GPU/queue/approval, variables, storage and deletion instructions, with a compact architecture diagram. Operational pages keep controls and current state information.
+**远程访问** contains the current link/status/copy action. The training navigation badge counts only pending training records, hides at zero, and excludes running/debug records. The last navigation item, **帮助**, collects account, editor, GPU/queue/approval, variables, storage and deletion instructions, with a compact architecture diagram. Operational pages keep controls and current state information.
 
 Validation commands:
 

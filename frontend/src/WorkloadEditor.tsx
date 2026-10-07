@@ -1,8 +1,8 @@
 import React from "react";
 import type { Workload } from "./types";
 
-export function WorkloadEditor({ item, busy, save, close }: {
-  item: Workload; busy: boolean; save: (data: Record<string, unknown>) => void; close: () => void;
+export function WorkloadEditor({ item, maxGpus, busy, save, close }: {
+  item: Workload; maxGpus: number; busy: boolean; save: (data: Record<string, unknown>) => void; close: () => void;
 }) {
   const running = item.status === "RUNNING";
   return <div className="modal-backdrop"><section className="modal workload-editor" role="dialog" aria-modal="true" aria-labelledby="workload-edit-title">
@@ -21,7 +21,7 @@ export function WorkloadEditor({ item, busy, save, close }: {
       <div className="form-grid">
         <label className="field"><span>总时长（秒）</span><input name="time" type="number" min="5" max="604800" defaultValue={item.time_limit_seconds} required /></label>
         {!running && <>
-          <label className="field"><span>GPU 数量</span><input name="gpus" type="number" min="0" max={item.kind === "debug" ? 1 : 64} defaultValue={item.requested_gpus} required /></label>
+          <label className="field"><span>GPU 数量</span><input name="gpus" type="number" min="0" max={maxGpus} defaultValue={item.requested_gpus} required /></label>
           <label className="field"><span>显卡编号（逗号分隔，空白为自动）</span><input name="indices" defaultValue={item.requested_gpu_indices?.join(",") || ""} pattern="[0-9, ]*" /></label>
           <label className="field"><span>CPU 核数</span><input name="cpus" type="number" min="1" max="32" defaultValue={item.requested_cpus} required /></label>
           <label className="field"><span>内存（MB）</span><input name="ram" type="number" min="256" max="65536" defaultValue={item.requested_ram_mb} required /></label>

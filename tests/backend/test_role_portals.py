@@ -160,3 +160,23 @@ def test_admin_extension_of_short_debug_records_approval(portal):
     client,db,people,actor=portal;actor[0]=people['admin']
     assert client.patch('/api/debug/owner-debug',json={'time_limit_seconds':43200}).status_code==200
     r=db.get(Workload,'owner-debug');assert r.approval_status=='APPROVED' and r.approved_by=='admin'
+
+
+@pytest.mark.parametrize('path', ['jobs', 'debug'])
+def test_members_submit_multiple_gpus_and_admin_edits_with_owner_quota(portal, path):
+    client, db, people, actor = portal
+    people['owner'].max_gpus = 3
+    db.commit()
+    payload = {'requested_gpus': 2, 'gpu_indices': [1, 2]}
+    if path == 'jobs':
+        payload['command'] = 'true'
+    response = client.post('/api/' + path, json=payload)
+    assert response.status_code == 201, response.text
+    resource = response.json()
+    assert resource['requested_gpus'] == 2 and resource['requested_gpu_indices'] == [1, 2]
+    actor[0] = people['admin']
+    updated = client.patch('/api/' + path + '/' + resource['id'], json={'requested_gpus': 3, 'gpu_indices': [0, 1, 2]})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()['requested_gpus'] == 3
+    actor[0] = people['owner']
+    assert client.post('/api/' + path, json={**payload, 'requested_gpus': 4, 'gpu_indices': [0, 1, 2, 3]}).status_code == 422

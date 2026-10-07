@@ -406,6 +406,9 @@ main {
 .gpu-picker { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .gpu-choices { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; }
 .gpu-choices label { display: flex; align-items: center; gap: 8px; border: 1px solid hsl(var(--role-hue, 126.000deg) 16.667% 88.235% / 1.0000); border-radius: 6px; padding: 10px; }
+.gpu-choices label.disabled { color: #879098; background: #f1f3f5; border-color: #dde1e5; cursor: not-allowed; }
+.gpu-choices label.disabled small { color: #929aa2; }
+.gpu-choices label.disabled input { cursor: not-allowed; }
 .gpu-choices input { width: auto; }
 .gpu-choices small { display: block; margin-top: 5px; color: hsl(var(--role-hue, 148.889deg) 11.588% 45.686% / 1.0000); }
 .gpu-picker p { grid-column: 1 / -1; }
