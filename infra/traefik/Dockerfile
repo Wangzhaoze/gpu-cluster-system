@@ -8,3 +8,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 COPY infra/traefik/traefik.yml /etc/traefik/traefik.yml
 COPY infra/traefik/dynamic.yml /etc/traefik/dynamic.yml
 ENTRYPOINT ["traefik"]
+
+# Keep the service entrypoint argument-free when using a local build base.
+CMD []

@@ -6,3 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-14 c
 COPY infra/postgres/entrypoint.sh /usr/local/bin/lab-postgres
 RUN chmod +x /usr/local/bin/lab-postgres
 ENTRYPOINT ["/usr/local/bin/lab-postgres"]
+
+# Keep the service entrypoint argument-free when using a local build base.
+CMD []
