@@ -8,4 +8,4 @@ COPY tests/backend/ ./tests/
 COPY tests/integration/ ./integration/
 ENV PYTHONUNBUFFERED=1
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["bash", "-c", "alembic upgrade head && python3 -m app.seed && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]
+CMD ["bash", "-c", "alembic upgrade head && python3 -m app.seed && exec uvicorn app.server:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]

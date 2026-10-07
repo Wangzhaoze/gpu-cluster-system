@@ -1,5 +1,31 @@
 const STYLE_ID = "gpu-lab-ui-enhancements";
 
+type LogTarget = { kind: "jobs" | "debug"; id: string };
+let lastLogTarget: LogTarget | null = null;
+
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args: Parameters<typeof fetch>) => {
+  const input = args[0];
+  const url =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+  const match = url.match(
+    /\/api\/(jobs|debug)\/([a-f0-9-]{36})\/logs(?:$|[?#])/,
+  );
+  if (match) {
+    lastLogTarget = {
+      kind: match[1] as LogTarget["kind"],
+      id: match[2],
+    };
+  }
+  const response = await nativeFetch(...args);
+  if (match) queueMicrotask(enhance);
+  return response;
+};
+
 function ensureStyles() {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
@@ -45,31 +71,31 @@ function addLogDownload() {
   if (!modal) return;
 
   const head = modal.querySelector<HTMLElement>(".panel-head");
-  const log = modal.querySelector<HTMLPreElement>("pre");
-  if (!head || !log || head.querySelector("[data-log-download]")) return;
+  if (!head || head.querySelector("[data-log-download]")) return;
+
+  const shortId =
+    head.querySelector("h2")?.textContent?.split("·").pop()?.trim() || "";
+  if (
+    !lastLogTarget ||
+    lastLogTarget.kind !== "jobs" ||
+    !lastLogTarget.id.startsWith(shortId)
+  ) {
+    return;
+  }
 
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = "下载 TXT";
   button.className = "log-download-button";
   button.dataset.logDownload = "true";
-  button.title = "下载当前任务日志为 TXT";
-
+  button.title = "下载完整训练日志为 TXT";
   button.addEventListener("click", () => {
-    const title =
-      head.querySelector("h2")?.textContent?.replace("运行日志", "").replace("·", "").trim() ||
-      "task";
-    const blob = new Blob([log.textContent || ""], {
-      type: "text/plain;charset=utf-8",
-    });
-    const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `gpu-lab-${title}-log.txt`;
+    anchor.href = `/api/jobs/${lastLogTarget!.id}/logs/download`;
+    anchor.download = `training-${lastLogTarget!.id}.txt`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    URL.revokeObjectURL(url);
   });
 
   const close = Array.from(head.querySelectorAll("button")).find(
