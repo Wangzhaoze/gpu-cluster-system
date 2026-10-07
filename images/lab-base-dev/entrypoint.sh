@@ -73,6 +73,10 @@ fi
 chmod 700 /opt/user-state/ssh
 # Seed image-provided extensions as the student so later starts do not need a
 # recursive chown over a potentially large extension directory.
+# Recover containers made from older pinned images whose seed tree was root-only.
+if ! runuser -u "$LAB_USERNAME" -- test -r /opt/lab/extensions; then
+    chmod -R a+rX /opt/lab
+fi
 runuser -u "$LAB_USERNAME" --preserve-environment -- \
     cp -r -n /opt/lab/extensions/. /opt/user-state/code-server/extensions/
 flock -u 8
@@ -116,6 +120,9 @@ if [[ ${1:-} == code-server ]]; then
     done
     if [ -n "$user_data" ]; then
         flock 8
+        if ! runuser -u "$LAB_USERNAME" -- test -r /usr/local/bin/configure-lab-editor; then
+            chmod 0755 /usr/local/bin/configure-lab-editor
+        fi
         runuser -u "$LAB_USERNAME" --preserve-environment -- configure-lab-editor "$user_data"
         flock -u 8
     fi

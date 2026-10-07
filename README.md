@@ -167,3 +167,7 @@ The API persists job requests in PostgreSQL; a separate scheduler worker allocat
 | [Architecture](docs/ARCHITECTURE.md) | Services, storage, scheduling, and container isolation |
 | [Implementation notes](docs/IMPLEMENTATION_NOTES.md) | Implementation details and project limitations |
 | [简体中文 README](docs/README.zh-CN.md) | Complete Chinese version of this guide |
+
+## Workspace startup recovery
+
+If a workspace exits with `cp: cannot stat '/opt/lab/extensions/.': Permission denied`, use the updated base/PyTorch images: their public extension files and editor helpers are readable by members, with compatibility recovery for older pinned images. The existing-home `useradd` warning is harmless. See the [verified recovery and pending cleanup list](docs/WORKSPACE_RECOVERY_2026-10-07.md) for member mappings, preserved backups and the exact candidate names. No cleanup has been performed.

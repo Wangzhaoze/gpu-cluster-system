@@ -14,8 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends cuda-nvcc-12-8 
 COPY images/lab-base-dev/entrypoint.sh /usr/local/bin/lab-entrypoint
 COPY images/lab-base-dev/ensure-user-env.sh /usr/local/bin/ensure-user-env
 COPY images/lab-base-dev/configure-editor.py /usr/local/bin/configure-lab-editor
-RUN chmod +x /usr/local/bin/lab-entrypoint /usr/local/bin/ensure-user-env /usr/local/bin/configure-lab-editor \
+RUN chmod 0755 /usr/local/bin/lab-entrypoint /usr/local/bin/ensure-user-env /usr/local/bin/configure-lab-editor \
     && code-server --extensions-dir /opt/lab/extensions --install-extension ms-python.python
+# The seed extensions contain public package files, read by unprivileged members.
+RUN chmod -R a+rX /opt/lab
 ENV NVIDIA_VISIBLE_DEVICES=void
 ENV CUDA_HOME=/usr/local/cuda
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/lab-entrypoint"]

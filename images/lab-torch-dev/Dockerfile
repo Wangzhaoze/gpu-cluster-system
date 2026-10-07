@@ -11,10 +11,12 @@ RUN python -m pip install --no-cache-dir uv==0.6.17 json5==0.12.1 \
 COPY images/lab-base-dev/entrypoint.sh /usr/local/bin/lab-entrypoint
 COPY images/lab-base-dev/ensure-user-env.sh /usr/local/bin/ensure-user-env
 COPY images/lab-base-dev/configure-editor.py /usr/local/bin/configure-lab-editor
-RUN chmod +x /usr/local/bin/lab-entrypoint /usr/local/bin/ensure-user-env /usr/local/bin/configure-lab-editor \
+RUN chmod 0755 /usr/local/bin/lab-entrypoint /usr/local/bin/ensure-user-env /usr/local/bin/configure-lab-editor \
     && code-server --extensions-dir /opt/lab/extensions --install-extension ms-python.python \
     && nvcc --version \
     && python -c "import torch; assert torch.version.cuda == '12.8'; assert 'sm_120' in torch.cuda.get_arch_list() or torch.backends.cuda.is_built(); print(torch.__version__)"
+# The seed extensions contain public package files, read by unprivileged members.
+RUN chmod -R a+rX /opt/lab
 # This image's preinstalled torch belongs to its own Python interpreter.
 # Fresh student venvs inherit its packages; existing Python 3.10 users retain
 # their previous pinned template and are never migrated automatically.
