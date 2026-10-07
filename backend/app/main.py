@@ -1236,17 +1236,22 @@ def remote_access(user: User = Depends(current_user)):
 
 
 @app.get("/api/storage")
-def user_storage(user: User = Depends(current_user)):
+def user_storage(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    username = user.username
+    # Filesystem scans can be slow; release the authentication connection first.
+    db.close()
     return {
-        "username": user.username,
-        "bytes": storage.usage(user.username),
-        "venv_volume": f"lab_pyenv_{user.username}",
-        "datasets": "共享只读挂载 /datasets",
+        "username": username,
+        "bytes": storage.usage(username),
+        "venv_volume": f"lab_pyenv_{username}",
+        "datasets": "共享只读挂载 $HOME/dataset（$DATASET；兼容 /datasets）",
     }
 
 
 @app.get("/api/admin/storage")
 def admin_storage(user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    users = db.execute(select(User.id, User.username, User.role)).all()
+    db.close()
     return [
         {
             "user_id": item.id,
@@ -1255,7 +1260,7 @@ def admin_storage(user: User = Depends(admin_user), db: Session = Depends(get_db
             "workspace_host_path": storage.host_paths(item.username)["workspace"] if item.role == "MEMBER" else None,
             "bytes": storage.usage(item.username),
         }
-        for item in db.scalars(select(User))
+        for item in users
     ]
 
 

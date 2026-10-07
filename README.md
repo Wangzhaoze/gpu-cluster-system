@@ -22,7 +22,23 @@ Open the printed public `https://….trycloudflare.com` link, or `http://localho
 ./scripts/lab.sh up --remote --no-build
 ```
 
-Supply datasets with `./scripts/lab.sh bootstrap --dataset-path /absolute/datasets` before startup. Containers see them read-only at `/datasets`. User files/results live under `runtime/`; Python environments and PostgreSQL use persistent Docker volumes.
+Supply datasets with `./scripts/lab.sh bootstrap --dataset-path /absolute/datasets` before startup. Containers see them read-only at `$HOME/dataset`, with `$DATASET` pointing to that directory; `/datasets` remains available for existing code. User files/results live under `runtime/`; Python environments and PostgreSQL use persistent Docker volumes.
+
+## Shared datasets
+
+On this PC, `DATASET_HOST_PATH=/home/local/Desktop/code/Datasets` in private `.env`. Each member's workspace, debug session and training container bind this directory read-only at `/home/<username>/dataset`. `$DATASET` contains that absolute path, matching `$HOME/dataset`; new members receive it automatically. Host additions appear in the containers immediately without copying files. Members save generated files under `/workspace` or `/results`. Storage size statistics are cached for up to one minute to avoid repeated scans of large projects.
+
+```bash
+echo "$DATASET"
+ls "$DATASET"
+python -c 'import os; from pathlib import Path; print(list(Path(os.environ["DATASET"]).iterdir()))'
+```
+
+The shared environment-variable setting is `DATASET=$HOME/dataset`. The backend resolves this exact expression (or `${HOME}/dataset`) for each container user before starting it. Ordinary variable precedence still applies: task, personal, global, default. `/datasets` remains a read-only alias for scripts that already use it.
+
+Administrators use the native Linux `local` identity: `/home/local/dataset` is a symlink to the same source, and new host VS Code terminals export `DATASET=/home/local/dataset`. Access there follows the existing host permissions. Reopen an existing terminal to receive the variable. `./scripts/lab.sh host-editor install` prepares the symlink and terminal setup from `DATASET_HOST_PATH`; it rejects a conflicting real directory rather than replacing it.
+
+Changing Docker bind mounts requires recreating existing containers. This deployment backed up their private home directories, then recreated three workspaces and two debug sessions with authorization. The shared native administrator editor was restarted to pass `DATASET` to its Python and plugin processes. Private home files and persistent workspace/results/cache/Python volumes were retained, as were the debug records, GPU assignments and original deadlines. Programs and terminal processes interrupted by recreation must be started again.
 
 ## Enable real RTX 5060 Ti GPUs
 
@@ -93,7 +109,7 @@ See [public access and student instructions](docs/REMOTE_ACCESS.md), [Ubuntu dep
 
 Members see their container workspace controls without Ubuntu host paths. Administrators find each member's absolute workspace path in **存储 → workspace 宿主机地址**, with copy and remote VS Code actions. The admin storage API exposes `workspace_host_path`; admin `/api/workspace?user_id=…` additionally exposes bind paths, UID/GID and an ownership-preserving import command. Member workspace responses omit those host details.
 
-These directories are live Docker bind mounts: host edits and member Web VS Code edits affect the same files. When importing a project on the host, use the administrator workspace API's `sudo rsync -a --chown=UID:GID` command, substitute the source directory, and preserve the member's ownership. Open `/workspace/project` inside the member editor to continue developing with `/opt/user-env/venv/bin/python`. `/results` and `/scratch` persist too, and `/datasets` is shared read-only. The in-app Help menu explains the container directories and persistent environments.
+These directories are live Docker bind mounts: host edits and member Web VS Code edits affect the same files. When importing a project on the host, use the administrator workspace API's `sudo rsync -a --chown=UID:GID` command, substitute the source directory, and preserve the member's ownership. Open `/workspace/project` inside the member editor to continue developing with `/opt/user-env/venv/bin/python`. `/results` and `/scratch` persist too, and `$HOME/dataset` (`$DATASET`) is shared read-only, with `/datasets` retained as an alias. The in-app Help menu explains the container directories and persistent environments.
 
 The deployed checkout is `/home/local/gpu-cluster-system`; its private `.env` points to `/home/local/gpu-cluster-system/runtime`. Both are ignored by Git. Manage the deployment from this checkout with `./scripts/lab.sh up --remote`, `status` and `remote-url`. Retain the `gpu-lab-poc` Compose project, `gpu-lab-poc_postgres-data` database volume and `lab_pyenv_*` Python volumes. A runtime migration must pause workspace writers and backend/worker before copying data with numeric ownership, then recreate running workspaces with the new bind paths. Keep an existing Quick Tunnel running during application migration to retain its public link; restarting the Quick Tunnel creates a new link.
 

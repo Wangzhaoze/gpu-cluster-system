@@ -1,4 +1,6 @@
 from functools import cached_property
+import io
+import tarfile
 import docker
 from docker.errors import NotFound
 from docker.types import DeviceRequest
@@ -63,6 +65,7 @@ class DockerRuntime:
         real_gpu: bool,
     ) -> dict[str, str]:
         result = {
+            "DATASET": f"/home/{user.username}/dataset",
             "HF_HOME": "/scratch/hf",
             "TORCH_HOME": "/scratch/torch",
             "PIP_CACHE_DIR": "/scratch/pip",
@@ -74,6 +77,8 @@ class DockerRuntime:
             ):
                 result[variable.key] = variable.value
         result.update(overrides)
+        if result.get("DATASET") in {"$HOME/dataset", "${HOME}/dataset"}:
+            result["DATASET"] = f"/home/{user.username}/dataset"
         result.update(
             {
                 "LAB_USERNAME": user.username,
@@ -124,6 +129,8 @@ class DockerRuntime:
         name = self.name(kind, resource_id)
         existing = self.get(name)
         if existing:
+            if existing.status == "created":
+                self.prepare_home(existing, user)
             return existing  # deterministic name closes crash-after-create window
         self.provision(user)
         self.client.images.get(env.image)  # fail clearly; never implicitly pull
@@ -161,7 +168,7 @@ class DockerRuntime:
             kwargs["device_requests"] = [
                 DeviceRequest(device_ids=list(map(str, gpus)), capabilities=[["gpu"]])
             ]
-        return self.client.containers.create(
+        container = self.client.containers.create(
             env.image,
             process,
             name=name,
@@ -178,6 +185,27 @@ class DockerRuntime:
             restart_policy={"Name": "no"},
             **kwargs,
         )
+
+        self.prepare_home(container, user)
+        return container
+
+    def prepare_home(self, container, user: User):
+        # Docker creates the bind mount's parent as root before useradd runs.
+        # Seed owned shell files too: useradd skips skel when home already exists.
+        # Dataset files remain untouched and read-only.
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            directory = tarfile.TarInfo(user.username)
+            directory.type = tarfile.DIRTYPE
+            directory.uid = directory.gid = user.uid_hint
+            directory.mode = 0o755
+            archive.addfile(directory)
+            for name in (".bashrc", ".bash_profile"):
+                shell = tarfile.TarInfo(f"{user.username}/{name}")
+                shell.uid = shell.gid = user.uid_hint
+                shell.mode = 0o644
+                archive.addfile(shell)
+        container.put_archive("/home", stream.getvalue())
 
     def capture_log(self, workload: Workload, container):
         workload.log_path = storage.save_log(

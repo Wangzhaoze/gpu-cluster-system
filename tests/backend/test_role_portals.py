@@ -180,3 +180,48 @@ def test_members_submit_multiple_gpus_and_admin_edits_with_owner_quota(portal, p
     assert updated.json()['requested_gpus'] == 3
     actor[0] = people['owner']
     assert client.post('/api/' + path, json={**payload, 'requested_gpus': 4, 'gpu_indices': [0, 1, 2, 3]}).status_code == 422
+
+
+
+def test_dataset_default_available_to_all_roles_and_obeys_scoped_priority(portal):
+    _, db, people, _ = portal
+    for person in people.values():
+        assert module.runtime.env(db, person, {}, [], False)['DATASET'] == '/home/' + person.username + '/dataset'
+    db.add(EnvVar(scope='global', key='DATASET', value='/datasets/shared'))
+    db.add(EnvVar(scope='owner', key='DATASET', value='/datasets/personal'))
+    db.commit()
+    assert module.runtime.env(db, people['other'], {}, [], False)['DATASET'] == '/datasets/shared'
+    assert module.runtime.env(db, people['owner'], {}, [], False)['DATASET'] == '/datasets/personal'
+    assert module.runtime.env(db, people['owner'], {'DATASET': '/datasets/task'}, [], False)['DATASET'] == '/datasets/task'
+
+
+@pytest.mark.parametrize('value', ['$HOME/dataset', '${HOME}/dataset'])
+def test_dataset_home_expression_expands_for_each_user(portal, value):
+    _, db, people, _ = portal
+    db.add(EnvVar(scope='global', key='DATASET', value=value))
+    db.commit()
+    for person in people.values():
+        assert module.runtime.env(db, person, {}, [], False)['DATASET'] == '/home/' + person.username + '/dataset'
+
+
+@pytest.mark.parametrize('role,path', [('owner', '/storage'), ('admin', '/admin/storage')])
+def test_slow_storage_scans_do_not_hold_database_connections(portal, monkeypatch, role, path):
+    client, db, people, actor = portal
+    actor[0] = people[role]
+    db.scalar(select(User).where(User.id == role))
+    assert db.in_transaction()
+    scanned = []
+
+    def usage(username):
+        assert not db.in_transaction(), 'Filesystem scans must release the DB pool connection'
+        scanned.append(username)
+        return {'workspace': 123, 'results': 0, 'scratch': 0}
+
+    monkeypatch.setattr(module.storage, 'usage', usage)
+    response = client.get('/api' + path)
+    assert response.status_code == 200
+    assert set(scanned) == ({role} if role == 'owner' else set(people))
+    if role == 'owner':
+        assert response.json()['username'] == role
+    else:
+        assert {row['user_id'] for row in response.json()} == set(people)

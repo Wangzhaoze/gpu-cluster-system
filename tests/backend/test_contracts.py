@@ -85,6 +85,8 @@ def test_mount_contract():
     mounts = DockerStorage().mounts("student01")
     by_target = {m["Target"]: m for m in mounts}
     assert by_target["/datasets"]["ReadOnly"]
+    assert by_target["/home/student01/dataset"]["ReadOnly"]
+    assert by_target["/home/student01/dataset"]["Source"] == by_target["/datasets"]["Source"]
     assert by_target["/opt/user-env"]["Type"] == "volume"
     assert by_target["/opt/user-env"]["Source"] == "lab_pyenv_student01"
     assert "/var/run/docker.sock" not in by_target
