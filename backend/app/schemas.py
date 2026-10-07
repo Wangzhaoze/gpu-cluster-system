@@ -112,7 +112,7 @@ class JobSpec(GpuSelection):
 
 class DebugSpec(GpuSelection):
     environment_id: str | None = None
-    requested_gpus: int = Field(default=1, ge=0, le=1)
+    requested_gpus: int = Field(default=1, ge=0, le=64)
     requested_cpus: int = Field(default=1, ge=1, le=32)
     requested_ram_mb: int = Field(default=2048, ge=256, le=65536)
     time_limit_seconds: int = Field(default=1800, ge=5, le=604800)
@@ -159,3 +159,20 @@ class EnvSetting(Input):
         if "\x00" in value or len(value) > 8192:
             raise ValueError("无效环境变量值")
         return value
+
+
+class WorkloadPatch(Input):
+    requested_gpus: int | None = Field(default=None, ge=0, le=64)
+    gpu_indices: list[StrictInt] | None = Field(default=None, max_length=64)
+    requested_cpus: int | None = Field(default=None, ge=1, le=32)
+    requested_ram_mb: int | None = Field(default=None, ge=256, le=65536)
+    time_limit_seconds: int | None = Field(default=None, ge=5, le=604800)
+    command: str | None = Field(default=None, min_length=1, max_length=10000)
+    workdir: str | None = Field(default=None, max_length=500)
+    output_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,80}$")
+
+    @model_validator(mode="after")
+    def nonempty_patch(self):
+        if not self.model_fields_set or any(getattr(self, key) is None for key in self.model_fields_set - {"gpu_indices"}):
+            raise ValueError("请提供有效的修改字段")
+        return self

@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 import shutil
+from threading import Lock
+from time import monotonic
 from typing import Protocol
 from docker.types import Mount
 from .config import settings
@@ -15,6 +17,11 @@ class StorageProvider(Protocol):
 class DockerStorage:
     """Host paths are configuration, never user input; Linux venv lives in a volume."""
 
+    def __init__(self):
+        self._usage_cache = {}
+        self._usage_locks = {}
+        self._usage_lock = Lock()
+
     def paths(self, username: str) -> dict[str, str]:
         return {
             "workspace": f"users/{username}/workspace",
@@ -26,23 +33,44 @@ class DockerStorage:
         for relative in self.paths(username).values():
             Path(settings.runtime_root, relative).mkdir(parents=True, exist_ok=True)
 
-    def mounts(self, username: str) -> list[Mount]:
+    def host_paths(self, username: str) -> dict[str, str]:
         root = settings.host_root.rstrip("/")
+        return {
+            **{kind: f"{root}/{relative}" for kind, relative in self.paths(username).items()},
+            "datasets": settings.dataset_host_path,
+        }
+
+    def mounts(self, username: str) -> list[Mount]:
+        paths = self.host_paths(username)
         mounts = [
-            Mount(f"/{target}", f"{root}/{relative}", type="bind")
-            for target, relative in self.paths(username).items()
+            Mount(f"/{target}", paths[target], type="bind")
+            for target in self.paths(username)
         ]
         mounts.extend(
             [
                 Mount(
-                    "/datasets", settings.dataset_host_path, type="bind", read_only=True
+                    "/datasets", paths["datasets"], type="bind", read_only=True
                 ),
+                Mount(f"/home/{username}/dataset", paths["datasets"], type="bind", read_only=True),
                 Mount("/opt/user-env", f"lab_pyenv_{username}", type="volume"),
             ]
         )
         return mounts
 
     def usage(self, username: str) -> dict[str, int]:
+        # Polling must not repeatedly walk large workspaces in parallel.
+        key = (settings.runtime_root, username)
+        with self._usage_lock:
+            lock = self._usage_locks.setdefault(key, Lock())
+        with lock:
+            cached = self._usage_cache.get(key)
+            if cached and monotonic() - cached[0] < 60:
+                return dict(cached[1])
+            result = self._scan_usage(username)
+            self._usage_cache[key] = (monotonic(), result)
+            return dict(result)
+
+    def _scan_usage(self, username: str) -> dict[str, int]:
         # Do not follow links into datasets or escape a user's storage tree.
         result = {}
         for kind, relative in self.paths(username).items():
@@ -67,6 +95,7 @@ class DockerStorage:
     def delete_user_data(self, username: str, kinds: tuple[str, ...]) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_]{2,31}", username):
             raise ValueError("Invalid storage username")
+        self._usage_cache.pop((settings.runtime_root, username), None)
         root = Path(settings.runtime_root).resolve()
         for kind in kinds:
             path = root / self.paths(username)[kind]

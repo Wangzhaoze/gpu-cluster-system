@@ -1,8 +1,9 @@
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 import secrets
+import shlex
 import threading
 import time
 import unicodedata
@@ -12,10 +13,12 @@ from urllib.request import urlopen
 from docker.errors import DockerException, NotFound
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
-from .auth import admin_user, current_user, hasher, token_hash, verify_password
+from .auth import admin_user, current_user, member_user, hasher, token_hash, verify_password
 from .config import settings
+from .host_editor import host_workspace
 from .db import get_db
 from .docker_runtime import runtime
 from .models import (
@@ -35,6 +38,8 @@ from .schemas import (
     EnvironmentPatch,
     EnvSetting,
     JobSpec,
+    WorkloadPatch,
+    validate_env,
     Login,
     PasswordChange,
     PasswordReset,
@@ -158,6 +163,7 @@ def public_workload(resource: Workload, db: Session) -> dict:
         )
     }
     result.update(
+        can_manage=True,
         assigned_gpus=resource.assigned_gpus_json,
         requested_gpu_indices=resource.requested_gpu_indices_json,
         env_keys=list(resource.env_json),
@@ -395,6 +401,10 @@ def forward_auth(
     uri = unquote(urlsplit(request.headers.get("x-forwarded-uri", "")).path)
     if ".." in uri.split("/") or "\\" in uri or "\x00" in uri:
         raise HTTPException(403, "无效路由")
+    if re.fullmatch(r"/host(?:/.*)?", uri):
+        if user.role == "ADMIN":
+            return Response(status_code=200)
+        raise HTTPException(403, "仅管理员可以访问宿主机")
     workspace_match = re.fullmatch(r"/workspace/([a-z][a-z0-9_]{2,31})/.*", uri)
     debug_match = re.fullmatch(r"/debug/([a-f0-9-]{36})/.*", uri)
     if workspace_match:
@@ -411,6 +421,11 @@ def forward_auth(
         ):
             return Response(status_code=200)
     raise HTTPException(403, "无权访问此工作区或调试会话")
+
+
+@app.get("/api/auth/host-editor")
+def host_editor_auth(user: User = Depends(admin_user)):
+    return Response(status_code=204)
 
 
 @app.get("/api/users")
@@ -555,7 +570,9 @@ def delete_user(user_id: str, user: User = Depends(admin_user), db: Session = De
     return {"ok": True}
 
 
-def workspace_payload(db: Session, target: User):
+def workspace_payload(db: Session, target: User, actor: User | None = None):
+    if target.role == "ADMIN":
+        return host_workspace()
     workspace = db.get(Workspace, target.id)
     container = runtime.get(runtime.name("workspace", target.username))
     workspace.state = (
@@ -563,7 +580,10 @@ def workspace_payload(db: Session, target: User):
     )
     workspace.container_id = container.id if container else None
     db.commit()
-    return {
+    host_paths = storage.host_paths(target.username)
+    import_destination = shlex.quote(host_paths["workspace"] + "/project/")
+    result = {
+        "mode": "container",
         "state": workspace.state,
         "route_path": workspace.route_path,
         "container_id": workspace.container_id,
@@ -572,6 +592,10 @@ def workspace_payload(db: Session, target: User):
         ),
         "venv": "/opt/user-env/venv",
     }
+    if (actor or target).role == "ADMIN":
+        result.update(host_paths=host_paths, host_uid=target.uid_hint, host_gid=target.uid_hint,
+                      host_import_command=f"sudo rsync -a --chown={target.uid_hint}:{target.uid_hint} -- /path/to/project/ {import_destination}")
+    return result
 
 
 @app.get("/api/workspace")
@@ -580,13 +604,22 @@ def workspace(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    return workspace_payload(db, target_user(db, user, user_id))
+    return workspace_payload(db, target_user(db, user, user_id), user)
 
 
 def workspace_action(db: Session, actor: User, target: User, action: str):
     target = lock_user(db, target)
     if not target:
         raise HTTPException(404, "用户不存在")
+    if target.role == "ADMIN":
+        if action != "start":
+            raise HTTPException(422, "宿主机服务不通过学生工作区停止或重建")
+        payload = host_workspace()
+        if payload["state"] != "RUNNING":
+            raise HTTPException(503, payload["error_message"])
+        audit(db, actor, "host_editor.open", "host", "local")
+        db.commit()
+        return payload
     container = runtime.get(runtime.name("workspace", target.username))
     record = db.get(Workspace, target.id)
     if action in {"stop", "restart"}:
@@ -617,7 +650,7 @@ def workspace_action(db: Session, actor: User, target: User, action: str):
         record.last_started_at = now()
     audit(db, actor, f"workspace.{action}", "user", target.id)
     db.commit()
-    return workspace_payload(db, target)
+    return workspace_payload(db, target, actor)
 
 
 @app.post("/api/workspace/{action}")
@@ -636,6 +669,8 @@ def manage_workspace(
 def delete_workspace(user_id: str | None = None, user: User = Depends(admin_user), db: Session = Depends(get_db)):
     deletion_lock(db)
     target = lock_user(db, target_user(db, user, user_id))
+    if target.role == "ADMIN":
+        raise HTTPException(422, "不能通过工作区删除宿主机文件")
     idle_user(db, target)
     container = runtime.get(runtime.name("workspace", target.username))
     if container:
@@ -654,11 +689,20 @@ def delete_workspace(user_id: str | None = None, user: User = Depends(admin_user
 def list_workloads(db: Session, user: User, kind: str):
     query = select(Workload).where(Workload.kind == kind)
     if user.role != "ADMIN":
-        query = query.where(Workload.user_id == user.id)
-    return [
-        public_workload(item, db)
-        for item in db.scalars(query.order_by(Workload.created_at.desc()).limit(500))
-    ]
+        query = query.join(User, Workload.user_id == User.id).where(User.role == "MEMBER")
+    records = []
+    for item in db.scalars(query.order_by(Workload.created_at.desc()).limit(500)):
+        if user.role == "ADMIN" or item.user_id == user.id:
+            records.append(public_workload(item, db))
+        else:
+            summary = {key: getattr(item, key) for key in (
+                "id", "kind", "user_id", "status", "requested_gpus", "time_limit_seconds",
+                "created_at", "started_at", "expires_at", "finished_at")}
+            summary.update(username=db.get(User, item.user_id).username, can_manage=False,
+                           requested_gpu_indices=item.requested_gpu_indices_json,
+                           assigned_gpus=item.assigned_gpus_json)
+            records.append(summary)
+    return records
 
 
 @app.get("/api/jobs")
@@ -668,7 +712,7 @@ def jobs(user: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @app.post("/api/jobs", status_code=201)
 def add_job(
-    spec: JobSpec, user: User = Depends(current_user), db: Session = Depends(get_db)
+    spec: JobSpec, user: User = Depends(member_user), db: Session = Depends(get_db)
 ):
     user = lock_user(db, user)
     if not user or not user.enabled:
@@ -701,7 +745,7 @@ def cancel_job(
 
 @app.post("/api/jobs/{resource_id}/retry", status_code=201)
 def retry_job(
-    resource_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)
+    resource_id: str, user: User = Depends(member_user), db: Session = Depends(get_db)
 ):
     old = accessible_resource(db, user, resource_id, "train")
     if old.status not in TERMINAL:
@@ -759,7 +803,7 @@ def debug_sessions(user: User = Depends(current_user), db: Session = Depends(get
 
 @app.post("/api/debug", status_code=201)
 def add_debug(
-    spec: DebugSpec, user: User = Depends(current_user), db: Session = Depends(get_db)
+    spec: DebugSpec, user: User = Depends(member_user), db: Session = Depends(get_db)
 ):
     user = lock_user(db, user)
     if not user or not user.enabled:
@@ -886,6 +930,8 @@ def queue(user: User = Depends(current_user), db: Session = Depends(get_db)):
         .where(Workload.status.in_(["PENDING", *ACTIVE]))
         .order_by(func.coalesce(Workload.approved_at, Workload.created_at), Workload.id)
     )
+    if user.role != "ADMIN":
+        query = query.join(User, Workload.user_id == User.id).where(User.role == "MEMBER")
     return [
         {
             "id": item.id,
@@ -1064,6 +1110,90 @@ def set_env(
     return {"ok": True, "message": "仅对新建容器生效"}
 
 
+@app.delete("/api/settings/env/{key}")
+def delete_env(key: str, user_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != "ADMIN":
+        if user_id and user_id != user.id:
+            raise HTTPException(403, "成员仅能删除自己的环境变量")
+        user_id = user.id
+    if user_id:
+        target_user(db, user, user_id)
+    try:
+        validate_env({key: ""})
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    scope = user_id or "global"
+    item = db.get(EnvVar, (scope, key))
+    if not item:
+        raise HTTPException(404, "环境变量不存在")
+    db.delete(item)
+    audit(db, user, "env.delete", "env", f"{scope}/{key}")
+    db.commit()
+    return {"ok": True}
+
+
+def edit_workload(db: Session, actor: User, resource_id: str, kind: str, patch: WorkloadPatch):
+    deletion_lock(db)
+    resource = db.scalar(select(Workload).where(Workload.id == resource_id).with_for_update()
+                         .execution_options(populate_existing=True))
+    if not resource or resource.kind != kind:
+        raise HTTPException(404, "任务不存在")
+    changes = patch.model_dump(exclude_unset=True)
+    if resource.cancel_requested or resource.status not in {"PENDING", "AWAITING_APPROVAL", "RUNNING"}:
+        raise HTTPException(409, "当前状态不能编辑任务")
+    if resource.status == "RUNNING" and set(changes) != {"time_limit_seconds"}:
+        raise HTTPException(409, "运行中的任务仅可调整时长")
+    if kind == "debug" and set(changes) & {"command", "workdir", "output_name"}:
+        raise HTTPException(422, "调试会话不能修改训练命令")
+    owner = lock_user(db, db.get(User, resource.user_id))
+    if not owner or not owner.enabled:
+        raise HTTPException(409, "用户已停用")
+    data = {key: getattr(resource, key) for key in (
+        "environment_id", "requested_gpus", "requested_cpus", "requested_ram_mb", "time_limit_seconds")}
+    data["gpu_indices"] = resource.requested_gpu_indices_json
+    if kind == "train":
+        data.update(command=resource.command, workdir=resource.workdir, output_name=resource.output_name, env=resource.env_json)
+    else:
+        data["approval_reason"] = resource.approval_reason or "管理员调整调试时长"
+    data.update(changes)
+    try:
+        spec = JobSpec(**data) if kind == "train" else DebugSpec(**data)
+    except ValidationError as error:
+        raise HTTPException(422, str(error))
+    validate_resources(owner, spec)
+    allowed_environment(db, owner, spec.environment_id)
+    if resource.status == "RUNNING":
+        started = resource.started_at
+        if not started:
+            raise HTTPException(409, "任务启动时间不可用")
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        deadline = started + timedelta(seconds=spec.time_limit_seconds)
+        if deadline <= now():
+            raise HTTPException(422, "新的总时长必须大于已运行时长")
+        resource.expires_at = deadline
+    for key, value in changes.items():
+        setattr(resource, "requested_gpu_indices_json" if key == "gpu_indices" else key, getattr(spec, key))
+    if kind == "debug" and spec.time_limit_seconds > 36000 and resource.status != "AWAITING_APPROVAL":
+        if resource.approval_status != "APPROVED":
+            resource.approved_by, resource.approved_at = actor.id, now()
+        resource.approval_status = "APPROVED"
+        resource.approval_reason = spec.approval_reason
+    audit(db, actor, f"{kind}.edit", kind, resource.id, {"fields": list(changes)})
+    db.commit()
+    return public_workload(resource, db)
+
+
+@app.patch("/api/jobs/{resource_id}")
+def patch_job(resource_id: str, spec: WorkloadPatch, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return edit_workload(db, user, resource_id, "train", spec)
+
+
+@app.patch("/api/debug/{resource_id}")
+def patch_debug(resource_id: str, spec: WorkloadPatch, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return edit_workload(db, user, resource_id, "debug", spec)
+
+
 @app.get("/api/system/remote-access")
 @app.get("/api/settings/remote")
 def remote_access(user: User = Depends(current_user)):
@@ -1106,24 +1236,31 @@ def remote_access(user: User = Depends(current_user)):
 
 
 @app.get("/api/storage")
-def user_storage(user: User = Depends(current_user)):
+def user_storage(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    username = user.username
+    # Filesystem scans can be slow; release the authentication connection first.
+    db.close()
     return {
-        "username": user.username,
-        "bytes": storage.usage(user.username),
-        "venv_volume": f"lab_pyenv_{user.username}",
-        "datasets": "共享只读挂载 /datasets",
+        "username": username,
+        "bytes": storage.usage(username),
+        "venv_volume": f"lab_pyenv_{username}",
+        "datasets": "共享只读挂载 $HOME/dataset（$DATASET；兼容 /datasets）",
     }
 
 
 @app.get("/api/admin/storage")
 def admin_storage(user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    users = db.execute(select(User.id, User.username, User.role)).all()
+    db.close()
     return [
         {
             "user_id": item.id,
             "username": item.username,
+            "role": item.role,
+            "workspace_host_path": storage.host_paths(item.username)["workspace"] if item.role == "MEMBER" else None,
             "bytes": storage.usage(item.username),
         }
-        for item in db.scalars(select(User))
+        for item in users
     ]
 
 

@@ -19,6 +19,13 @@ class Settings:
     admin_username: str = os.getenv("INITIAL_ADMIN_USERNAME", "admin")
     admin_password: str = os.getenv("INITIAL_ADMIN_PASSWORD", "")
 
+    host_editor_enabled: bool = os.getenv("LAB_HOST_EDITOR_ENABLED", "false").lower() == "true"
+    host_editor_user: str = os.getenv("LAB_HOST_EDITOR_USER", "local")
+    host_editor_home: str = os.getenv("LAB_HOST_EDITOR_HOME", "/home/local")
+    host_editor_uid: int = int(os.getenv("LAB_HOST_EDITOR_UID", "1000"))
+    host_editor_gid: int = int(os.getenv("LAB_HOST_EDITOR_GID", "1000"))
+    host_editor_python: str = os.getenv("LAB_HOST_EDITOR_PYTHON", "/usr/bin/python3")
+
     @property
     def gpu_count(self) -> int:
         key = (
