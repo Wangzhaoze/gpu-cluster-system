@@ -37,15 +37,14 @@ class MockDockerScheduler:
         resource_id = new_id()
         data = spec.model_dump()
         selected = data.pop("gpu_indices")
-        approval = spec.time_limit_seconds > 36000
         resource = Workload(
             id=resource_id,
             kind="debug",
             user_id=user.id,
             route_path=f"/debug/{resource_id}/",
             command="code-server",
-            status="AWAITING_APPROVAL" if approval else "PENDING",
-            approval_status="PENDING" if approval else "NOT_REQUIRED",
+            status="PENDING",
+            approval_status="NOT_REQUIRED",
             requested_gpu_indices_json=selected,
             **data,
         )
@@ -126,8 +125,11 @@ class MockDockerScheduler:
         db.commit()
 
     def launch(self, db: Session, resource: Workload):
-        if resource.kind == "debug" and resource.time_limit_seconds > 36000 and resource.approval_status != "APPROVED":
-            self.finish(db, resource, None, "FAILED", "Long debug requires administrator approval")
+        if resource.kind == "debug" and resource.time_limit_seconds > 28800 and resource.started_at is None:
+            self.finish(db, resource, None, "FAILED", "Debug sessions are limited to eight hours")
+            return
+        if resource.requested_gpus < 1:
+            self.finish(db, resource, None, "FAILED", "Training and debugging require at least one GPU")
             return
         user = db.get(User, resource.user_id)
         env = db.get(Environment, resource.environment_id)
@@ -227,6 +229,11 @@ class MockDockerScheduler:
             )
         )
         for resource in pending:
+            if resource.kind == "debug" and db.scalar(select(Workload.id).where(
+                Workload.user_id == resource.user_id, Workload.kind == "debug",
+                Workload.status.in_(ACTIVE), Workload.id != resource.id
+            ).limit(1)):
+                break  # Also serialize legacy queued debug sessions after an upgrade.
             free = [
                 slot.gpu_index
                 for slot in self.list_resources(db)

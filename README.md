@@ -27,7 +27,7 @@
 | --- | --- |
 | **Browser workspaces** | VS Code via code-server, a dedicated Python environment, and persistent student files. |
 | **Queued training** | A shared FIFO scheduler, GPU quotas, saved results, logs, and retries. |
-| **Interactive GPU debug** | Automatic or explicit card selection, timed sessions, and approval for extended use. |
+| **Interactive GPU debug** | Automatic or explicit card selection, up to eight hours and one session per member. |
 | **Live GPU monitoring** | Utilization, memory, temperature, power, and visibility into external compute processes. |
 | **Environment templates** | Fixed Docker image versions, CUDA and nvcc, and a PyTorch development environment. |
 | **Lab administration** | User management, workload controls, protected deletion, and retained audit records. |
@@ -99,7 +99,7 @@ VS Code includes the Python extension. Its default interpreter is `/opt/user-env
 
 ## GPU monitoring
 
-The overview shows all four GPU models, utilization, memory, temperature, power, fan speed, clocks, driver version, PCI address and UUID. `gpu-monitor` samples NVIDIA utility counters every three seconds. The page distinguishes platform allocation from external compute processes; unavailable/stale measurements display a message and dashes. Automatic allocation skips cards with external compute processes. A selected busy card waits until it is free. If real telemetry is unavailable, GPU jobs wait for monitoring to recover.
+The overview shows all four GPU models, utilization, memory, temperature, power, clocks, driver version, PCI address and UUID. `gpu-monitor` samples NVIDIA utility counters every three seconds. The page distinguishes platform allocation from external compute processes; unavailable/stale measurements display a message and dashes. Automatic allocation skips cards with external compute processes. A selected busy card waits until it is free. If real telemetry is unavailable, GPU jobs wait for monitoring to recover.
 
 The monitor starts automatically with `./scripts/lab.sh up --remote --no-build` in real GPU mode. It uses the `gpu` Compose profile, host PID visibility for NVML process enumeration, the host user's UID/GID for writing snapshots, dropped capabilities and a read-only root filesystem. It has no Docker socket. To check it: `sg docker -c 'docker compose --profile gpu logs --tail 30 gpu-monitor'`.
 
@@ -109,19 +109,21 @@ The monitor starts automatically with `./scripts/lab.sh up --remote --no-build` 
 
 1. Log in as administrator and open **用户管理**.
 2. Enter a username such as `student01`, display name and a generated password. Select role **成员**.
-3. Select the **CUDA 12.8 · nvcc · PyTorch 2.7.1** fixed environment, set **GPU 上限** to **1**, and **Debug 免审批上限** to **10 小时**.
+3. Select the **CUDA 12.8 · nvcc · PyTorch 2.7.1** fixed environment, set **GPU 上限** to **1**, and **调试时长上限** to **8 小时**.
 4. Click **创建用户**, then **复制登录信息** and give the login details to the student.
-5. The student logs in through the public link, opens **在线调试**, chooses automatic allocation or **指定显卡**, checks one GPU, and enters the duration in hours. For ten hours or less, click **开启调试**. Wait for **运行中**, then open **VS Code ↗**.
+5. The student logs in through the public link, opens **在线调试**, chooses automatic allocation or **指定显卡**, checks one GPU, and enters the duration in hours. For eight hours or less, click **开启调试**. Wait for **运行中**, then open **VS Code ↗**.
 
 ### Choose your GPUs
 
-Training also supports automatic allocation, selecting multiple cards up to the user's quota, or CPU-only mode. Selections are persisted and reused by retries. API requests use `gpu_indices`, e.g. `requested_gpus=1, gpu_indices=[2]`; omit or send `null` for automatic allocation. A requested card is never silently substituted. Physical GPU indices correspond to the dashboard; a one-GPU container sees its assigned GPU as CUDA device 0.
+Training and debug require at least one GPU, with automatic allocation or manual selection of multiple cards up to the user's quota. Selections are persisted and reused by retries. API requests use `gpu_indices`, e.g. `requested_gpus=1, gpu_indices=[2]`; omit or send `null` for automatic allocation. A requested card is never silently substituted. Physical GPU indices correspond to the dashboard; a one-GPU container sees its assigned GPU as CUDA device 0.
 
-### Request a longer session
+### Session limits and resources
 
-For debug beyond ten hours (up to seven days), enter a reason and click **提交审批申请**. The session stays **等待管理员审批**, occupies no GPU/container and does not block the running queue. An administrator opens **在线调试**, reviews the duration/card/reason and clicks **批准** or **拒绝**, optionally recording a note. Only approval enters the FIFO, ordered by approval time. Students can **撤回申请** before launch. Each request needs its own approval; approval is not a reusable account entitlement. The duration starts when the container starts. Expiry or **停止** releases the GPU; closing the browser does not cancel the session. For PyTorch work, choose at least 4096 MB of RAM.
+Debug is limited to eight hours (or a lower account limit), with one unfinished session per member, including queued or cancelling sessions. That session may use multiple GPUs within the account quota. Existing running sessions retain their original deadlines when updating. New training and debug requests default to 4 CPU threads and 4 GB RAM; memory inputs use GB. Duration starts when the container starts; expiry or **停止** releases the GPU, while closing the browser leaves the session running.
 
-The migration raises current account limits to ten hours. Administrators may set a smaller per-account limit for short sessions; requesting more than ten hours still requires explicit approval.
+Members can **Kill** their own training; administrators can kill any training and extend its duration within the existing seven-day training limit. Each training row provides **打开日志** and **保存 TXT 日志**. Completed training/debug records and their task logs expire after seven days; workspace code, Python environments and output files are retained.
+
+Administrators can save announcement drafts, preview and explicitly publish them. Members receive unread announcements while online or after logging in; the bottom **关闭** button records acknowledgment for that member.
 
 ### Verify CUDA in your session
 
@@ -161,6 +163,7 @@ The API persists job requests in PostgreSQL; a separate scheduler worker allocat
 
 | Guide | Contents |
 | --- | --- |
+| [2026-10-08 portal update](docs/PORTAL_UPDATE_2026-10-08.md) | New controls, announcements and manual update/start script |
 | [Remote access & student guide](docs/REMOTE_ACCESS.md) | Public links, login, and student workflows |
 | [Ubuntu deployment](docs/UBUNTU_MIGRATION.md) | Host setup, configuration, and migration |
 | [Verification results](docs/UBUNTU_VALIDATION.md) | Deployment checks and acceptance results |

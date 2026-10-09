@@ -103,7 +103,7 @@ try:
     assert result.exit_code == 0 and "edited in workspace" in script.read_text()
     passed("host import, editable ownership, persistent PyTorch interpreter and workspace-to-host writes")
 
-    job = call(member, "POST", "/jobs", {"command": "python host_import.py", "workdir": "/workspace/project", "requested_gpus": 0, "requested_ram_mb": 1024, "time_limit_seconds": 120}, 201)
+    job = call(member, "POST", "/jobs", {"command": "python host_import.py", "workdir": "/workspace/project", "requested_gpus": 1, "requested_ram_mb": 1024, "time_limit_seconds": 120}, 201)
     for _ in range(120):
         state = call(member, "GET", "/jobs/" + job["id"])
         assert state["status"] not in {"FAILED", "TIMED_OUT", "CANCELLED"}, state

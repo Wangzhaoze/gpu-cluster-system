@@ -49,7 +49,7 @@ class UserCreate(Input):
     role: Literal["ADMIN", "MEMBER"] = "MEMBER"
     default_environment_id: str | None = None
     max_gpus: int = Field(default=5, ge=0, le=64)
-    max_debug_hours: int = Field(default=10, ge=1, le=10)
+    max_debug_hours: int = Field(default=8, ge=1, le=8)
 
 
 class UserPatch(Input):
@@ -58,7 +58,7 @@ class UserPatch(Input):
     enabled: bool | None = None
     default_environment_id: str | None = None
     max_gpus: int | None = Field(default=None, ge=0, le=64)
-    max_debug_hours: int | None = Field(default=None, ge=1, le=10)
+    max_debug_hours: int | None = Field(default=None, ge=1, le=8)
 
 
 class PasswordReset(Input):
@@ -85,9 +85,9 @@ class GpuSelection(Input):
 
 class JobSpec(GpuSelection):
     environment_id: str | None = None
-    requested_gpus: int = Field(default=0, ge=0, le=64)
-    requested_cpus: int = Field(default=1, ge=1, le=32)
-    requested_ram_mb: int = Field(default=1024, ge=256, le=65536)
+    requested_gpus: int = Field(default=1, ge=1, le=64)
+    requested_cpus: int = Field(default=4, ge=1, le=32)
+    requested_ram_mb: int = Field(default=4096, ge=256, le=65536)
     time_limit_seconds: int = Field(default=3600, ge=5, le=604800)
     command: str = Field(min_length=1, max_length=10000)
     workdir: str = Field(default="/workspace", max_length=500)
@@ -112,21 +112,19 @@ class JobSpec(GpuSelection):
 
 class DebugSpec(GpuSelection):
     environment_id: str | None = None
-    requested_gpus: int = Field(default=1, ge=0, le=64)
-    requested_cpus: int = Field(default=1, ge=1, le=32)
-    requested_ram_mb: int = Field(default=2048, ge=256, le=65536)
-    time_limit_seconds: int = Field(default=1800, ge=5, le=604800)
+    requested_gpus: int = Field(default=1, ge=1, le=64)
+    requested_cpus: int = Field(default=4, ge=1, le=32)
+    requested_ram_mb: int = Field(default=4096, ge=256, le=65536)
+    time_limit_seconds: int = Field(default=1800, ge=5, le=28800)
     approval_reason: str = Field(default="", max_length=2000)
-
-    @model_validator(mode="after")
-    def long_debug_reason(self):
-        if self.time_limit_seconds > 36000 and not self.approval_reason.strip():
-            raise ValueError("超过 10 小时的调试需要填写审批理由")
-        return self
 
 
 class ApprovalDecision(Input):
     note: str = Field(default="", max_length=2000)
+
+
+class TrainingExtension(Input):
+    extra_seconds: int = Field(ge=1, le=604800)
 
 
 class EnvironmentCreate(Input):
@@ -162,7 +160,7 @@ class EnvSetting(Input):
 
 
 class WorkloadPatch(Input):
-    requested_gpus: int | None = Field(default=None, ge=0, le=64)
+    requested_gpus: int | None = Field(default=None, ge=1, le=64)
     gpu_indices: list[StrictInt] | None = Field(default=None, max_length=64)
     requested_cpus: int | None = Field(default=None, ge=1, le=32)
     requested_ram_mb: int | None = Field(default=None, ge=256, le=65536)
@@ -176,3 +174,15 @@ class WorkloadPatch(Input):
         if not self.model_fields_set or any(getattr(self, key) is None for key in self.model_fields_set - {"gpu_indices"}):
             raise ValueError("请提供有效的修改字段")
         return self
+
+
+class AnnouncementDraft(Input):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("title", "body")
+    @classmethod
+    def meaningful_text(cls, value):
+        if not value.strip() or "\x00" in value:
+            raise ValueError("公告标题和内容不能为空或包含空字符")
+        return value.strip()

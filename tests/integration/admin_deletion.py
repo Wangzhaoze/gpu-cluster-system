@@ -128,7 +128,7 @@ try:
     assert (root / "keep.py").exists()
     done("real GPU debug uses default PyTorch; active deletion blocked and admin deletes stopped record")
 
-    job = call(member, "POST", "/jobs", {"command": "sleep 45", "requested_gpus": 0}, 201)
+    job = call(member, "POST", "/jobs", {"command": "sleep 45", "requested_gpus": 1}, 201)
     workloads.append(("jobs", job["id"]))
     wait(lambda: call(member, "GET", "/jobs/" + job["id"])["status"] == "RUNNING", "training startup")
     call(admin, "DELETE", "/jobs/" + job["id"], status=409)

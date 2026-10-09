@@ -54,6 +54,7 @@ services:
       dockerfile: backend/Dockerfile
       args:
         LAB_BASE_IMAGE: ${LAB_BASE_IMAGE}
+        LAB_BUILD_FINGERPRINT: ${LAB_BACKEND_BUILD_FINGERPRINT:-development}
     environment: *app-env
     volumes:
       - ${LAB_HOST_ROOT}:/runtime
@@ -92,6 +93,7 @@ services:
       args:
         LAB_BASE_IMAGE: ${LAB_BASE_IMAGE}
         LOCAL_NODE_IMAGE: ${LOCAL_NODE_IMAGE}
+        LAB_BUILD_FINGERPRINT: ${LAB_FRONTEND_BUILD_FINGERPRINT:-development}
     restart: unless-stopped
     networks: [lab-net]
 

@@ -24,7 +24,7 @@ def passed(name):
 
 def setup(browser, role='MEMBER', maximum=3):
     page = browser.new_page(viewport={'width': 1440, 'height': 1050})
-    actor = {'id': 'member', 'username': 'member', 'display_name': 'Member', 'role': role, 'enabled': True, 'max_gpus': maximum, 'max_debug_hours': 10, 'default_environment_id': 'env'}
+    actor = {'id': 'member', 'username': 'member', 'display_name': 'Member', 'role': role, 'enabled': True, 'max_gpus': maximum, 'max_debug_hours': 8, 'default_environment_id': 'env'}
     def route(route):
         req = route.request
         path = urlsplit(req.url).path.removeprefix('/api')
@@ -39,7 +39,7 @@ def setup(browser, role='MEMBER', maximum=3):
         elif path == '/system/remote-access': result = {'status': 'online', 'url': args.url}
         elif path == '/storage': result = {'user_id': 'member', 'username': 'member', 'bytes': {'workspace': 0, 'results': 0, 'scratch': 0}}
         elif path == '/users': result = [actor]
-        elif path in ['/jobs', '/debug', '/settings/env', '/admin/storage', '/admin/audit', '/admin/images']: result = []
+        elif path in ['/jobs', '/debug', '/settings/env', '/admin/storage', '/admin/audit', '/admin/images', '/announcements']: result = []
         route.fulfill(status=200, content_type='application/json', body=json.dumps(result))
     page.route('**/api/**', route)
     page.on('pageerror', lambda e: errors.append(str(e)))

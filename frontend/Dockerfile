@@ -7,6 +7,8 @@ RUN npm ci --ignore-scripts
 COPY frontend/ ./
 RUN npm run build
 FROM ${LAB_BASE_IMAGE}
+ARG LAB_BUILD_FINGERPRINT=development
+LABEL lab.application="gpu-cluster-system" lab.service="frontend" lab.build.fingerprint="${LAB_BUILD_FINGERPRINT}"
 WORKDIR /portal
 COPY --from=build /lab-build/dist ./
 ENTRYPOINT ["python3", "-m", "http.server", "8000"]

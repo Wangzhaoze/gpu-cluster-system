@@ -187,7 +187,7 @@ try:
     passed("password validation, change, all previous sessions revoked and new login")
     job = call(member, "POST", "/jobs", {
         "command": 'python -c "import os,pathlib; p=pathlib.Path(os.environ[\'LAB_RESULT_DIR\']); (p/\'remote.txt\').write_text(\'REMOTE_TRAIN_OK\'); print(\'REMOTE_TRAIN_OK\')"',
-        "requested_gpus": 0, "requested_ram_mb": 512, "time_limit_seconds": 60,
+        "requested_gpus": 1, "requested_ram_mb": 512, "time_limit_seconds": 60,
         "output_name": "remote_acceptance",
     })
     job_id = job["id"]
@@ -195,7 +195,7 @@ try:
         state = call(member, "GET", f"/jobs/{job_id}")
         assert state["status"] not in {"FAILED", "TIMED_OUT"}, str(state)
         return state["status"] == "COMPLETED"
-    wait(finished, "remote CPU training")
+    wait(finished, "remote GPU-required training")
     assert "REMOTE_TRAIN_OK" in call(member, "GET", f"/jobs/{job_id}/logs")["log"]
     result = Path("/runtime/results", ua["username"], "remote_acceptance", job_id, "remote.txt")
     assert result.read_text() == "REMOTE_TRAIN_OK"

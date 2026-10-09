@@ -33,24 +33,22 @@ def test_exact_selection_waits_for_those_cards_and_preserves_order():
     assert first_fit([0], 0, []) == []
 
 
-def test_ten_hour_boundary_and_required_reason():
-    assert UserCreate(username='testuser', display_name='Test', password='long-password').max_debug_hours == 10
-    spec = DebugSpec(time_limit_seconds=36000)
-    validate_resources(SimpleNamespace(max_gpus=1, max_debug_hours=10), spec)
-    with pytest.raises(ValidationError):
-        DebugSpec(time_limit_seconds=36001)
-    long = DebugSpec(time_limit_seconds=39600, approval_reason='Long interactive experiment')
-    resource = MockDockerScheduler().start_debug(MagicMock(), SimpleNamespace(id='user'), long)
-    assert resource.status == 'AWAITING_APPROVAL'
-    assert resource.approval_status == 'PENDING'
-    assert resource.container_id is None and resource.assigned_gpus_json is None
+def test_eight_hour_boundary_is_a_hard_limit():
+    assert UserCreate(username='testuser', display_name='Test', password='long-password').max_debug_hours == 8
+    spec = DebugSpec(time_limit_seconds=28800)
+    validate_resources(SimpleNamespace(max_gpus=1, max_debug_hours=8), spec)
+    for hours in [28801, 39600]:
+        with pytest.raises(ValidationError):
+            DebugSpec(time_limit_seconds=hours, approval_reason='No exceptions')
+    resource = MockDockerScheduler().start_debug(MagicMock(), SimpleNamespace(id='user'), spec)
+    assert resource.status == 'PENDING' and resource.approval_status == 'NOT_REQUIRED'
 
 
 def test_unapproved_long_debug_cannot_be_launched(monkeypatch):
     scheduler = MockDockerScheduler()
     finish = MagicMock()
     monkeypatch.setattr(scheduler, 'finish', finish)
-    resource = SimpleNamespace(kind='debug', time_limit_seconds=39600, approval_status='PENDING')
+    resource = SimpleNamespace(kind='debug', time_limit_seconds=39600, started_at=None)
     scheduler.launch(MagicMock(), resource)
     assert finish.call_args.args[3] == 'FAILED'
 

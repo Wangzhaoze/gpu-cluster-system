@@ -1,4 +1,4 @@
-"""Verify live telemetry, exact GPU selection and long-debug approval on disposable resources."""
+"""Verify live telemetry, exact GPU selection and eight-hour debug limits on disposable resources."""
 from datetime import datetime
 import json
 import os
@@ -41,10 +41,10 @@ def terminal(identifier):
     return debug(identifier)["status"] in {"COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED", "REJECTED"}
 
 
-def request_debug(hours=10, gpu=0):
+def request_debug(hours=8, gpu=0):
     d = call(member, "POST", "/debug", {"requested_gpus": 1, "gpu_indices": [gpu],
         "time_limit_seconds": int(hours * 3600), "requested_ram_mb": 4096,
-        "approval_reason": "Acceptance test of approval gating" if hours > 10 else ""}, 201)
+        "approval_reason": "GPU acceptance test"}, 201)
     resources.append(("debug", d["id"]))
     return d
 
@@ -69,16 +69,16 @@ try:
     assert free, "No physically available card for a non-invasive acceptance run"
     selected = free[-1]["gpu_index"]
     uuid = free[-1]["metrics"]["uuid"]
-    passed("fresh physical utilization/temperature/memory/power/fan/clock/UUID metrics for all four GPUs")
+    passed("fresh physical utilization/temperature/memory/power/clock/UUID metrics for all four GPUs")
 
     password = secrets.token_urlsafe(24)
     target = call(admin, "POST", "/users", {"username": "gpucheck_" + secrets.token_hex(4),
-        "display_name": "Disposable GPU approval acceptance", "password": password, "max_gpus": 1}, 201)
-    assert target["max_debug_hours"] == 10
+        "display_name": "Disposable GPU session acceptance", "password": password, "max_gpus": 1}, 201)
+    assert target["max_debug_hours"] == 8
     call(member, "POST", "/auth/login", {"username": target["username"], "password": password})
     call(member, "POST", "/debug", {"requested_gpus": 1, "gpu_indices": [4]}, status=422)
     call(member, "POST", "/debug", {"requested_gpus": 1, "gpu_indices": [selected, selected]}, status=422)
-    call(member, "POST", "/debug", {"time_limit_seconds": 36001}, status=422)
+    call(member, "POST", "/debug", {"time_limit_seconds": 28801}, status=422)
 
     external = next((s for s in metrics["slots"] if s["external_busy"]), None)
     if external:
@@ -89,67 +89,41 @@ try:
         wait(lambda: terminal(busy["id"]), "external-card request cancellation")
     passed("invalid selections rejected; externally occupied selected card waits without touching its process")
 
-    short = request_debug(10, selected)
+    short = request_debug(8, selected)
     assert short["approval_status"] == "NOT_REQUIRED"
-    running = wait(lambda: (d if (d := debug(short["id"]))["status"] == "RUNNING" and member.get(d["route_path"]).status_code == 200 else None), "selected-card ten-hour debug")
+    running = wait(lambda: (d if (d := debug(short["id"]))["status"] == "RUNNING" and member.get(d["route_path"]).status_code == 200 else None), "selected-card eight-hour debug")
     assert running["assigned_gpus"] == [selected]
-    assert (datetime.fromisoformat(running["expires_at"]) - datetime.fromisoformat(running["started_at"])).total_seconds() == 36000
+    assert (datetime.fromisoformat(running["expires_at"]) - datetime.fromisoformat(running["started_at"])).total_seconds() == 28800
     container = client.containers.get(running["container_id"])
     gpu_uuid = container.exec_run(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"])
     assert gpu_uuid.exit_code == 0 and gpu_uuid.output.decode().strip() == uuid
     tensor = container.exec_run(["/opt/user-env/venv/bin/python", "-c", "import torch; assert torch.cuda.device_count()==1; x=torch.ones(128,128,device='cuda'); assert (x@x)[0,0].item()==128"], user=target["username"])
     assert tensor.exit_code == 0, tensor.output.decode()
-    passed("ten hours starts without approval; exact selected physical UUID and CUDA computation verified")
+    passed("eight-hour session starts; exact selected physical UUID and CUDA computation verified")
 
     job = call(member, "POST", "/jobs", {"requested_gpus": 1, "gpu_indices": [selected], "requested_ram_mb": 4096,
         "command": "nvidia-smi --query-gpu=uuid --format=csv,noheader && python -c 'import torch; assert torch.cuda.device_count()==1; print((torch.ones(32,32,device=\"cuda\")@torch.ones(32,32,device=\"cuda\"))[0,0].item())'"}, 201)
     resources.append(("jobs", job["id"]))
     time.sleep(3)
     assert call(member, "GET", "/jobs/" + job["id"])["status"] == "PENDING"
-    long = request_debug(11, selected)
-    assert long["status"] == "AWAITING_APPROVAL" and long["container_id"] is None and long["assigned_gpus"] == []
-    assert not any(q["id"] == long["id"] for q in call(member, "GET", "/resources/queue"))
-    call(member, "POST", "/debug/" + long["id"] + "/approve", {}, status=403)
-    call(member, "POST", "/debug/" + long["id"] + "/reject", {}, status=403)
-    assert client.containers.list(all=True, filters={"name": "lab-debug-" + long["id"]}) == []
-    approved = call(admin, "POST", "/debug/" + long["id"] + "/approve", {"note": "Approved disposable eleven-hour GPU test"})
-    assert approved["status"] == "PENDING" and approved["approval_status"] == "APPROVED" and approved["approved_by"] == admin_id
-    call(admin, "POST", "/debug/" + long["id"] + "/approve", {}, status=409)
-    passed("long request holds no GPU/container/queue place until admin approval; member and duplicate decisions denied")
-
+    call(member, "POST", "/debug", {"requested_gpus": 1, "time_limit_seconds": 3600}, status=409)
+    call(member, "POST", "/debug", {"requested_gpus": 0}, status=422)
+    call(member, "POST", "/jobs", {"requested_gpus": 0, "command": "true"}, status=422)
+    call(admin, "PATCH", "/debug/" + short["id"], {"time_limit_seconds": 32400}, status=422)
+    call(member, "POST", "/jobs/" + job["id"] + "/extend", {"extra_seconds": 3600}, status=403)
+    extended = call(admin, "POST", "/jobs/" + job["id"] + "/extend", {"extra_seconds": 3600})
+    assert extended["time_limit_seconds"] == job["time_limit_seconds"] + 3600
+    passed("one debug per member, eight-hour hard limit, mandatory GPU and administrator-only training extension")
     call(member, "POST", "/debug/" + short["id"] + "/stop")
     wait(lambda: terminal(short["id"]), "release selected GPU")
     completed = wait(lambda: (j if (j := call(member, "GET", "/jobs/" + job["id"]))["status"] == "COMPLETED" else None), "selected-card training")
     assert completed["assigned_gpus"] == [selected]
     assert uuid in call(member, "GET", "/jobs/" + job["id"] + "/logs")["log"]
-    approved_running = wait(lambda: (d if (d := debug(long["id"]))["status"] == "RUNNING" else None), "approved debug launch")
-    assert approved_running["assigned_gpus"] == [selected]
-    assert (datetime.fromisoformat(approved_running["expires_at"]) - datetime.fromisoformat(approved_running["started_at"])).total_seconds() == 39600
-    call(member, "POST", "/debug/" + long["id"] + "/stop")
-    wait(lambda: terminal(long["id"]), "approved long debug stop")
-    passed("selected-card training waits/releases correctly; approval joins FIFO and eleven-hour expiry starts on launch")
-
-    rejected = request_debug(12, selected)
-    decision = call(admin, "POST", "/debug/" + rejected["id"] + "/reject", {"note": "Not approved for test"})
-    assert decision["status"] == "REJECTED" and decision["approval_note"] == "Not approved for test"
-    assert decision["container_id"] is None and decision["assigned_gpus"] == []
-    withdrawn = request_debug(13, selected)
-    call(member, "POST", "/debug/" + withdrawn["id"] + "/stop")
-    wait(lambda: debug(withdrawn["id"])["status"] == "CANCELLED", "member withdrawal")
-    call(admin, "POST", "/debug/" + withdrawn["id"] + "/approve", {}, status=409)
-    passed("admin rejection and member withdrawal retain history without allocating GPUs")
-
-    limit_check = request_debug(14, selected)
-    call(admin, "PATCH", "/users/" + target["id"], {"max_gpus": 0})
-    call(admin, "POST", "/debug/" + limit_check["id"] + "/approve", {}, status=422)
-    call(admin, "PATCH", "/users/" + target["id"], {"max_gpus": 1})
+    next_debug = request_debug(1, selected)
+    wait(lambda: debug(next_debug["id"])["status"] == "RUNNING", "new debug after prior session ends")
     call(admin, "POST", "/users/" + target["id"] + "/disable")
-    wait(lambda: terminal(limit_check["id"]), "disabled owner approval cancellation")
-    call(admin, "POST", "/debug/" + limit_check["id"] + "/approve", {}, status=409)
-    events = call(admin, "GET", "/admin/audit")
-    assert any(e["action"] == "debug.approve" and e["target_id"] == long["id"] for e in events)
-    assert any(e["action"] == "debug.reject" and e["target_id"] == rejected["id"] for e in events)
-    passed("approval revalidates current quotas/disabled accounts and records admin decisions in audit")
+    wait(lambda: terminal(next_debug["id"]), "disabled member session cancellation")
+    passed("selected training waits/releases correctly; next debug allowed after completion and disable cancels it")
     success = True
     print(f"GPU FEATURES ACCEPTANCE PASSED ({len(checks)} checks)", flush=True)
 finally:

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   User,
@@ -12,10 +12,12 @@ import type {
   Audit,
   Remote,
   DockerImage,
+  Announcement,
 } from "./types";
 import "./styles.css";
 import { HelpPage } from "./HelpPage";
 import { WorkloadEditor } from "./WorkloadEditor";
+import { AdminAnnouncements, MemberAnnouncement } from "./Announcements";
 
 class ApiError extends Error {
   constructor(
@@ -74,6 +76,8 @@ const statusName: Record<string, string> = {
   AWAITING_APPROVAL: "等待管理员审批",
   REJECTED: "审批未通过",
   EXTERNAL_BUSY: "外部占用",
+  DEBUGGING: "调试中",
+  TRAINING: "训练中",
 };
 const loginFailure: Record<string, string> = {
   unknown_user: "用户名不存在",
@@ -102,7 +106,11 @@ function auditDetail({ action, metadata: m }: Audit) {
       .join(" · ");
   return Object.keys(m).length ? JSON.stringify(m) : "";
 }
-function Status({ value }: { value: string }) {
+function Status({ value, kind }: { value: string; kind?: string }) {
+  if (["RUNNING", "STARTING"].includes(value)) {
+    if (kind === "train") value = "TRAINING";
+    if (kind === "debug") value = "DEBUGGING";
+  }
   return (
     <span className={"status status-" + value.toLowerCase()}>
       <i />
@@ -122,6 +130,7 @@ function Icon({ name }: { name: string }) {
       "M9 13a4 4 0 100-8 4 4 0 000 8z M2 22v-3a7 7 0 0114 0v3 M17 5a4 4 0 010 8 M20 22v-3a6 6 0 00-3-5",
     storage: "M3 5h18v5H3z M3 14h18v5H3z M6 7h1 M6 16h1",
     audit: "M5 3h14v18H5z M8 7h8 M8 11h8 M8 15h5",
+    announcements: "M6 17h12 M8 17V9a4 4 0 018 0v8 M10 21h4 M12 2v3",
     remote:
       "M2 12a10 10 0 1020 0 10 10 0 00-20 0 M2 12h20 M12 2a20 20 0 010 20 20 20 0 010-20",
     help: "M4 3h16v18H4z M8 7h8 M8 11h8 M8 15h5",
@@ -161,7 +170,7 @@ const metric = (value: number | null | undefined, unit: string) =>
   value == null ? "—" : Math.round(value * 10) / 10 + unit;
 
 function GpuPicker({ slots, max, initial, telemetryReady }: { slots: Slot[]; max: number; initial: number; telemetryReady: boolean }) {
-  const [mode, setMode] = useState(initial && max ? "auto" : "cpu");
+  const [mode, setMode] = useState("auto");
   const [count, setCount] = useState(Math.min(initial || 1, max));
   const [selected, setSelected] = useState<number[]>([]);
   const available = (s: Slot) => telemetryReady && s.state === "FREE" && !s.external_busy;
@@ -173,7 +182,7 @@ function GpuPicker({ slots, max, initial, telemetryReady }: { slots: Slot[]; max
     });
   }, [slots, max, telemetryReady]);
   useEffect(() => { setCount((current) => Math.min(Math.max(current, 1), max)); }, [max]);
-  const gpuCount = mode === "cpu" ? 0 : mode === "manual" ? selectedAvailable.length : Math.min(count, max);
+  const gpuCount = mode === "manual" ? selectedAvailable.length : Math.min(count, max);
   return <div className="gpu-picker">
     <Field label="显卡分配">
       <select value={mode} onChange={(e) => {
@@ -184,11 +193,11 @@ function GpuPicker({ slots, max, initial, telemetryReady }: { slots: Slot[]; max
           setSelected(first && max ? [first.gpu_index] : []);
         }
       }}>
-        <option value="cpu">仅 CPU</option>
         <option value="auto" disabled={!max}>自动分配空闲显卡</option>
         <option value="manual" disabled={!max}>指定显卡</option>
       </select>
     </Field>
+    {!max && <p className="muted">暂无 GPU 配额，请联系管理员。</p>}
     <input type="hidden" name="gpu_mode" value={mode} />
     <input type="hidden" name="gpu" value={gpuCount} />
     <input type="hidden" name="gpu_indices" value={JSON.stringify(mode === "manual" ? selectedAvailable : null)} />
@@ -228,6 +237,8 @@ function App() {
     telemetry_error: string | null;
   }>({ mode: "mock-docker", worker_online: false, slots: [], telemetry_status: "unavailable", telemetry_sampled_at: null, telemetry_error: null });
   const [debugHours, setDebugHours] = useState(1);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const acknowledgedAnnouncements = useRef(new Set<string>());
   const [workspace, setWorkspace] = useState<Workspace | null>(null),
     [jobs, setJobs] = useState<Workload[]>([]),
     [debug, setDebug] = useState<Workload[]>([]),
@@ -267,6 +278,8 @@ function App() {
     setEditingVariable(null);
     setWorkloadEditing(null);
     setVariables([]);
+    setAnnouncements([]);
+    acknowledgedAnnouncements.current.clear();
     setScope("global");
     setShowLoginPassword(false);
     setError("");
@@ -279,6 +292,20 @@ function App() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+  useEffect(() => {
+    setAnnouncements([]);
+    acknowledgedAnnouncements.current.clear();
+    if (!user) return;
+    let active = true;
+    const load = () => api<Announcement[]>("/announcements").then(items => {
+      if (active) setAnnouncements(items.filter(item => !acknowledgedAnnouncements.current.has(item.id)));
+    }).catch(e => {
+      if (active && e instanceof ApiError && e.status === 401) endSession("登录已失效，请重新登录。");
+    });
+    load();
+    const timer = setInterval(load, 3000);
+    return () => { active = false; clearInterval(timer); };
+  }, [user?.id]);
   const refresh = useCallback(async () => {
     if (!user) return;
     const [r, w, j, d, q, e, t, v] = await Promise.all([
@@ -389,6 +416,7 @@ function App() {
   const gpuIndices = (f: FormData): number[] | null => {
     const indices = JSON.parse(txt(f, "gpu_indices") || "null");
     if (txt(f, "gpu_mode") === "manual" && !indices?.length) throw new Error("请至少选择一张显卡");
+    if (num(f, "gpu") < 1) throw new Error("训练和调试必须申请至少一张 GPU");
     return indices;
   };
   const envOptions = environments.filter(
@@ -398,6 +426,7 @@ function App() {
       (user?.role === "ADMIN" || e.id === user?.default_environment_id),
   );
   const activeDebug = debug.filter((d) => !terminal.includes(d.status));
+  const ownDebugPending = debug.some(d => d.user_id === user?.id && !terminal.includes(d.status));
   const pendingTrainingCount = queue.filter((q) => q.kind === "train" && q.status === "PENDING").length;
   const nav = [
     ["dashboard", "总览"],
@@ -409,6 +438,7 @@ function App() {
     ...(user?.role === "ADMIN"
       ? [
           ["users", "用户管理"],
+          ["announcements", "公告"],
           ["audit", "操作记录"],
         ]
       : []),
@@ -653,7 +683,7 @@ function App() {
                       key={s.gpu_index}
                       className={
                         "gpu-card " +
-                        (s.state === "FREE" && !s.external_busy ? "available" : "occupied")
+                        (s.external_busy ? "gpu-external" : s.state === "FREE" ? "gpu-free" : s.owner_type === "debug" ? "gpu-debug" : s.owner_type === "train" ? "gpu-train" : "gpu-external")
                       }
                     >
                       <div>
@@ -666,15 +696,13 @@ function App() {
                       </div>
                       <h3>GPU {s.gpu_index}</h3>
                       <strong className="gpu-model">{s.metrics?.name || (resources.mode === "mock-docker" ? "模拟显卡" : "NVIDIA 显卡")}</strong>
-                      <Status value={s.external_busy ? "EXTERNAL_BUSY" : s.state} />
-                      <p>{s.username || (s.external_busy ? "外部计算进程占用，等待释放" : "平台尚未分配")}</p>
+                      <Status value={s.external_busy ? "EXTERNAL_BUSY" : s.state} kind={s.owner_type || undefined} />
+                      <p>用户：{s.username || (s.external_busy ? "外部进程" : "—")}</p>
                       <dl className="gpu-metrics">
                         <dt>GPU 利用率</dt><dd>{metric(s.metrics?.utilization_percent, "%")}</dd>
                         <dt>显存</dt><dd>{metric(s.metrics?.memory_used_mb, "")} / {metric(s.metrics?.memory_total_mb, " MiB")}</dd>
-                        <dt>显存控制器利用率</dt><dd>{metric(s.metrics?.memory_utilization_percent, "%")}</dd>
                         <dt>温度</dt><dd>{metric(s.metrics?.temperature_c, "°C")}</dd>
                         <dt>功耗 / 上限</dt><dd>{metric(s.metrics?.power_w, "")} / {metric(s.metrics?.power_limit_w, " W")}</dd>
-                        <dt>风扇</dt><dd>{metric(s.metrics?.fan_percent, "%")}</dd>
                         <dt>核心 / 显存频率</dt><dd>{metric(s.metrics?.graphics_clock_mhz, "")} / {metric(s.metrics?.memory_clock_mhz, " MHz")}</dd>
                         <dt>计算进程数</dt><dd>{s.metrics?.compute_process_count ?? "—"}</dd>
                       </dl>
@@ -710,7 +738,10 @@ function App() {
                               {q.requested_gpus} GPU{q.requested_gpu_indices ? " (" + q.requested_gpu_indices.join(", ") + ")" : " (自动)"} · {q.id.slice(0, 8)}
                             </small>
                           </div>
-                          <Status value={q.status} />
+                          <Status value={q.status} kind={q.kind} />
+                          {q.kind === "train" && <button className="danger training-kill" disabled={busy || !q.can_manage || q.cancel_requested}
+                            title={q.can_manage ? "提前终止此训练任务" : "仅本人或管理员可以终止"}
+                            onClick={() => act(() => api("/jobs/" + q.id + "/kill", "POST"), "已请求终止训练")}>Kill</button>}
                         </div>
                       ))}
                     </div>
@@ -864,7 +895,7 @@ function App() {
                           requested_gpus: num(f, "gpu"),
                           gpu_indices: gpuIndices(f),
                           requested_cpus: num(f, "cpu"),
-                          requested_ram_mb: num(f, "ram"),
+                          requested_ram_mb: Math.round(num(f, "ram") * 1024),
                           time_limit_seconds: num(f, "time"),
                           output_name: txt(f, "output"),
                           env,
@@ -894,24 +925,25 @@ function App() {
                         required
                       />
                     </Field>
-                    <GpuPicker slots={resources.slots} max={Math.min(user.max_gpus, resources.slots.length)} initial={0} telemetryReady={resources.mode !== "local-gpu-docker" || resources.telemetry_status === "online"} />
-                    <Field label="CPU 核数">
+                    <GpuPicker slots={resources.slots} max={Math.min(user.max_gpus, resources.slots.length)} initial={1} telemetryReady={resources.mode !== "local-gpu-docker" || resources.telemetry_status === "online"} />
+                    <Field label="CPU 线程数">
                       <input
                         name="cpu"
                         type="number"
                         min="1"
                         max="32"
-                        defaultValue="1"
+                        defaultValue="4"
                         required
                       />
                     </Field>
-                    <Field label="内存 (MB)">
+                    <Field label="内存 (GB)">
                       <input
                         name="ram"
                         type="number"
-                        min="256"
-                        max="65536"
-                        defaultValue="1024"
+                        min="0.25"
+                        max="64"
+                        step="any"
+                        defaultValue="4"
                         required
                       />
                     </Field>
@@ -949,7 +981,7 @@ function App() {
                   </Field>
                   <div className="form-foot">
 
-                    <button className="primary" disabled={busy}>
+                    <button className="primary" disabled={busy || user.max_gpus < 1 || !resources.slots.length}>
                       提交训练 →
                     </button>
                   </div>
@@ -958,7 +990,7 @@ function App() {
               <section className="panel">
                 <div className="panel-head">
                   <h2>训练记录</h2>
-                  <span className="muted">自动刷新</span>
+                  <span className="muted">自动刷新 · 已结束记录保留 7 天</span>
                 </div>
                 <div className="table-wrap">
                   <table>
@@ -987,7 +1019,7 @@ function App() {
                           </td>
                           <td>{j.username}</td>
                           <td>
-                            <Status value={j.status} />
+                            <Status value={j.status} kind="train" />
                             {j.cancel_requested &&
                               !terminal.includes(j.status) && (
                                 <small>正在取消…</small>
@@ -1002,6 +1034,9 @@ function App() {
                           <td>{j.exit_code ?? "—"}</td>
                           <td>
                             <div className="actions compact">
+                              <button className="danger training-kill" disabled={busy || !j.can_manage || j.cancel_requested || terminal.includes(j.status)}
+                                title={j.can_manage ? "提前终止此训练任务" : "仅本人或管理员可以终止"}
+                                onClick={() => act(() => api("/jobs/" + j.id + "/kill", "POST"), "已请求终止训练")}>Kill</button>
                               {j.can_manage && <>
                               <button
                                 onClick={() => {
@@ -1009,11 +1044,20 @@ function App() {
                                   setLogTarget(j);
                                 }}
                               >
-                                日志
+                                打开日志
                               </button>
+                              <a className="button" href={"/api/jobs/" + j.id + "/logs/download"} download={"training-" + j.id + ".txt"}>保存 TXT 日志</a>
                               {user.role === "MEMBER" && terminal.includes(j.status) && <button disabled={busy} onClick={() => act(() => api("/jobs/" + j.id + "/retry", "POST"), "已创建重试任务")}>重试</button>}
-                              {!terminal.includes(j.status) && <button disabled={busy} onClick={() => act(() => api("/jobs/" + j.id + "/cancel", "POST"), "已请求取消")}>取消</button>}
-                              {user.role === "ADMIN" && ["PENDING", "RUNNING"].includes(j.status) && <button disabled={busy || j.cancel_requested} onClick={() => setWorkloadEditing(j)}>编辑</button>}
+                              {user.role === "ADMIN" && ["PENDING", "RUNNING"].includes(j.status) && <>
+                                <button disabled={busy || j.cancel_requested} onClick={() => setWorkloadEditing(j)}>编辑</button>
+                                <button disabled={busy || j.cancel_requested} onClick={() => {
+                                  const input = window.prompt("增加训练时长（小时）", "1");
+                                  if (input === null) return;
+                                  const hours = Number(input);
+                                  if (!Number.isFinite(hours) || hours <= 0) { setError("请填写大于 0 的延长小时数"); return; }
+                                  act(() => api("/jobs/" + j.id + "/extend", "POST", { extra_seconds: Math.round(hours * 3600) }), "训练时长已延长");
+                                }}>延长</button>
+                              </>}
                               {user.role === "ADMIN" && terminal.includes(j.status) && (
                                 <button className="danger" disabled={busy}
                                   onClick={() => deleteResource("/jobs/" + j.id, "删除训练记录和日志；保留结果文件。")}>删除记录</button>
@@ -1035,6 +1079,8 @@ function App() {
             <>
               {user.role === "MEMBER" && <section className="panel">
                 <h2>新建调试会话</h2>
+                <p className="muted">每次最多 8 小时，每人同时只能有一个调试会话；一个会话可以使用多张 GPU。</p>
+                {ownDebugPending && <p className="info">你已有调试会话，请等待它结束后再创建。</p>}
                 <form
                   onSubmit={(e) =>
                     submit(
@@ -1045,11 +1091,11 @@ function App() {
                           requested_gpus: num(f, "gpu"),
                           gpu_indices: gpuIndices(f),
                           requested_cpus: num(f, "cpu"),
-                          requested_ram_mb: num(f, "ram"),
+                          requested_ram_mb: Math.round(num(f, "ram") * 1024),
                           time_limit_seconds: num(f, "hours") * 3600,
                           approval_reason: txt(f, "approval_reason"),
                         }),
-                      debugHours > 10 ? "申请已提交，等待管理员审批（暂不占用 GPU）" : "调试会话已进入队列",
+                      "调试会话已进入队列",
                     )
                   }
                 >
@@ -1068,38 +1114,39 @@ function App() {
                     </Field>
                     <GpuPicker slots={resources.slots} max={Math.min(user.max_gpus, resources.slots.length)} initial={1} telemetryReady={resources.mode !== "local-gpu-docker" || resources.telemetry_status === "online"} />
                     <Field label="会话时长（小时）">
-                      <input name="hours" type="number" min="0.5" max="168" step="0.5"
+                      <input name="hours" type="number" min="0.5" max={Math.min(user.max_debug_hours, 8)} step="0.5"
                         value={debugHours} onChange={(e) => setDebugHours(Number(e.target.value))} required />
                     </Field>
-                    <Field label={debugHours > 10 ? "审批理由（必填）" : "备注 / 长时调试理由"}>
-                      <input name="approval_reason" maxLength={2000} required={debugHours > 10}
-                        placeholder="超过 10 小时需管理员审批，最多申请 7 天" />
+                    <Field label="调试备注">
+                      <input name="approval_reason" maxLength={2000}
+                        placeholder="可填写本次调试的用途" />
                     </Field>
-                    <Field label="CPU 核数">
+                    <Field label="CPU 线程数">
                       <input
                         type="number"
                         name="cpu"
                         min="1"
                         max="32"
-                        defaultValue="1"
+                        defaultValue="4"
                         required
                       />
                     </Field>
-                    <Field label="内存 (MB)">
+                    <Field label="内存 (GB)">
                       <input
                         type="number"
                         name="ram"
-                        min="256"
-                        max="65536"
-                        defaultValue="2048"
+                        min="0.25"
+                        max="64"
+                        step="any"
+                        defaultValue="4"
                         required
                       />
                     </Field>
                   </div>
                   <div className="form-foot">
 
-                    <button className="primary" disabled={busy}>
-                      {debugHours > 10 ? "提交审批申请 →" : "开启调试 →"}
+                    <button className="primary" disabled={busy || ownDebugPending || user.max_gpus < 1 || !resources.slots.length}>
+                      开启调试 →
                     </button>
                   </div>
                 </form>
@@ -1119,7 +1166,7 @@ function App() {
                           申请 {d.time_limit_seconds / 3600} 小时 · {d.requested_gpu_indices ? "指定 GPU " + d.requested_gpu_indices.join(", ") : "自动分配"} ·{" "}
                           {d.assigned_gpus.length
                             ? "GPU " + d.assigned_gpus.join(", ")
-                            : "CPU"}{" "}
+                            : "等待 GPU 分配"}{" "}
                           ·{" "}
                           {d.expires_at
                             ? "剩余 " +
@@ -1137,7 +1184,7 @@ function App() {
                         {d.approval_reason && <small>申请理由：{d.approval_reason}</small>}
                         {d.approval_note && <small>管理员意见：{d.approval_note}</small>}
                       </div>
-                      <Status value={d.status} />
+                      <Status value={d.status} kind="debug" />
                       <div className="actions compact">
                         {user.role === "ADMIN" && d.status === "AWAITING_APPROVAL" && (
                           <><button disabled={busy || d.cancel_requested} onClick={() => {
@@ -1187,6 +1234,14 @@ function App() {
               </section>
             </>
           )}
+          {page === "announcements" && user.role === "ADMIN" && <AdminAnnouncements items={announcements}
+            save={async (title, body, id) => {
+              await api("/announcements" + (id ? "/" + id : ""), id ? "PATCH" : "POST", { title, body });
+              setAnnouncements(await api<Announcement[]>("/announcements"));
+            }} publish={async id => {
+              await api("/announcements/" + id + "/publish", "POST");
+              setAnnouncements(await api<Announcement[]>("/announcements"));
+            }} />}
           {page === "users" && (
             <>
               {invitation && (
@@ -1382,13 +1437,13 @@ function App() {
                         required
                       />
                     </Field>
-                    <Field label="Debug 免审批上限 (小时，最多 10)">
+                    <Field label="调试时长上限 (小时，最多 8)">
                       <input
                         name="max_debug_hours"
                         type="number"
                         min="1"
-                        max="10"
-                        defaultValue={editing?.max_debug_hours ?? 10}
+                        max="8"
+                        defaultValue={Math.min(editing?.max_debug_hours ?? 8, 8)}
                         required
                       />
                     </Field>
@@ -1753,7 +1808,7 @@ function App() {
                 </button>
               </div>
               <p className="muted">
-                {user.role === "ADMIN" ? "管理员" : `实验室成员 · GPU 上限 ${user.max_gpus} · 调试免审批上限 ${user.max_debug_hours} 小时`}
+                {user.role === "ADMIN" ? "管理员" : `实验室成员 · GPU 上限 ${user.max_gpus} · 调试上限 ${Math.min(user.max_debug_hours, 8)} 小时`}
               </p>
               <h2>修改密码</h2>
 
@@ -1824,6 +1879,12 @@ function App() {
         </main>
       </div>
       {workloadEditing && user.role === "ADMIN" && <WorkloadEditor item={workloadEditing} maxGpus={Math.min(users.find((u) => u.id === workloadEditing.user_id)?.max_gpus || 0, resources.slots.length)} busy={busy} close={() => setWorkloadEditing(null)} save={data => act(async () => { await api("/" + (workloadEditing.kind === "debug" ? "debug" : "jobs") + "/" + workloadEditing.id, "PATCH", data); setWorkloadEditing(null); }, "任务已更新")} />}
+      {user.role === "MEMBER" && announcements.length > 0 && <MemberAnnouncement key={announcements[0].id} item={announcements[0]} acknowledge={async () => {
+        const id = announcements[0].id;
+        await api("/announcements/" + id + "/read", "POST");
+        acknowledgedAnnouncements.current.add(id);
+        setAnnouncements(current => current.filter(item => item.id !== id));
+      }} />}
       {logTarget && (
         <div className="modal-backdrop" onClick={() => setLogTarget(null)}>
           <section

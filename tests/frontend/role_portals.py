@@ -9,7 +9,7 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--url',default='http://127.0.0.1:18080')
 parser.add_argument('--output',default='/tmp/role-portal-ui')
 args=parser.parse_args();out=Path(args.output);out.mkdir(parents=True,exist_ok=True)
-users=[{'id':name,'username':name,'display_name':name,'role':role,'enabled':True,'default_environment_id':'env','max_gpus':1,'max_debug_hours':10} for name,role in [('owner','MEMBER'),('other','MEMBER'),('admin','ADMIN')]]
+users=[{'id':name,'username':name,'display_name':name,'role':role,'enabled':True,'default_environment_id':'env','max_gpus':1,'max_debug_hours':8} for name,role in [('owner','MEMBER'),('other','MEMBER'),('admin','ADMIN')]]
 variables=[{'scope':'global','key':'SHARED_MODEL','value':'global-value'},{'scope':'owner','key':'PERSONAL_MODEL','value':'personal-value'}]
 base={'kind':'train','status':'PENDING','command':'python private_train.py','workdir':'/workspace','output_name':'run','requested_cpus':1,'requested_ram_mb':4096,'requested_gpus':1,'requested_gpu_indices':[0],'assigned_gpus':[],'time_limit_seconds':3600,'approval_status':'NOT_REQUIRED','approval_reason':'','approval_note':'','created_at':'2026-10-06T18:00:00Z','started_at':None,'finished_at':None,'expires_at':None,'route_path':'/debug/private/','exit_code':None,'error_message':None,'cancel_requested':False,'can_manage':True}
 records=[dict(base,id=name+'-'+kind,user_id=name,username=name,kind=kind) for name in ['owner','other'] for kind in ['train','debug']]
@@ -41,12 +41,12 @@ def route_api(actor):
     if actor['role']=='ADMIN' or record['user_id']==actor['id']: result.append(record)
     else:
      summary={k:record[k] for k in ['id','kind','user_id','username','status','requested_gpus','requested_gpu_indices','assigned_gpus','time_limit_seconds','created_at','started_at','expires_at','finished_at']};summary['can_manage']=False;result.append(summary)
-  elif path=='/resources/queue': result=[{k:r[k] for k in ['id','kind','status','requested_gpus','requested_gpu_indices','username']} for r in records]
+  elif path=='/resources/queue': result=[{**{k:r[k] for k in ['id','kind','status','requested_gpus','requested_gpu_indices','username','cancel_requested']},'can_manage':actor['role']=='ADMIN' or r['user_id']==actor['id']} for r in records]
   elif path=='/environments': result=[{'id':'env','name':'PyTorch','image':'test','image_version':'2.7.1','description':'','enabled':True,'available':True,'recommended':True}]
   elif path=='/users': result=users
   elif path in ['/admin/storage','/storage']:
    result=[{'username':u['username'],'user_id':u['id'],'role':u['role'],'workspace_host_path':'/host/runtime/users/'+u['username']+'/workspace' if u['role']=='MEMBER' else None,'bytes':{'workspace':1024,'results':0,'scratch':0}} for u in users] if path=='/admin/storage' else {'username':actor['username'],'bytes':{'workspace':1024,'results':0,'scratch':0}}
-  elif path in ['/admin/audit','/admin/images']: result=[]
+  elif path in ['/admin/audit','/admin/images','/announcements']: result=[]
   elif path=='/system/remote-access': result={'status':'online','url':'https://example.trycloudflare.com'}
   elif path=='/settings/env':
    scopes=[query.get('user_id',['global'])[0]] if actor['role']=='ADMIN' else ['global',actor['id']];result=[v for v in variables if v['scope'] in scopes]
@@ -73,7 +73,7 @@ with sync_playwright() as p:
   member_color=member.locator('aside').evaluate('(e)=>getComputedStyle(e).backgroundColor');assert admin_color!=member_color and member_color=='rgb(20, 57, 47)'
   member.get_by_role('button',name='工作区',exact=True).click();expect(member.locator('main .panel')).to_have_count(1);expect(member.get_by_text('需要 GPU 时使用在线调试或训练任务')).to_be_visible();assert 'host-path' not in member.locator('main').inner_html();member.screenshot(path=str(out/'member-workspace.png'),full_page=True,animations="disabled")
   passed('blue admin versus unchanged green member theme; minimal member workspace')
-  member.locator('nav').get_by_role('button',name='训练任务').click();expect(member.get_by_text('新建训练任务',exact=True)).to_be_visible();other=member.locator('tbody tr').filter(has_text='other');expect(other.get_by_role('button')).to_have_count(0);expect(other.get_by_text('公开摘要')).to_be_visible();assert 'private_train' not in other.inner_text()
+  member.locator('nav').get_by_role('button',name='训练任务').click();expect(member.get_by_text('新建训练任务',exact=True)).to_be_visible();other=member.locator('tbody tr').filter(has_text='other');expect(other.get_by_role('button',name='Kill',exact=True)).to_be_disabled();expect(other.locator('.log-unavailable')).to_be_visible();assert 'private_train' not in other.inner_text()
   member.get_by_role('button',name='在线调试',exact=True).click();expect(member.get_by_text('新建调试会话',exact=True)).to_be_visible();other=member.locator('.debug-row').filter(has_text='other');expect(other.get_by_role('button')).to_have_count(0);expect(other.get_by_role('link')).to_have_count(0)
   passed('member submission forms and other-member summaries without editor/log/control actions')
   admin.get_by_role('button',name='环境',exact=True).click();admin.get_by_label('变量作用范围').select_option('owner')

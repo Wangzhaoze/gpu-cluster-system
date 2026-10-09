@@ -43,7 +43,7 @@ export function HelpPage({ admin }: { admin: boolean }) {
       <section className="panel">
         <h2>2. 管理账号与宿主机</h2>
         <ol className="steps">
-          <li>在“用户管理”创建成员，选择默认 PyTorch 模板、GPU 上限和调试免审批上限，复制登录信息给成员。初始密码只在创建后的信息卡中临时显示。</li>
+          <li>在“用户管理”创建成员，选择默认 PyTorch 模板、GPU 上限和调试时长上限，复制登录信息给成员。初始密码只在创建后的信息卡中临时显示。</li>
           <li>“宿主机 → 远程 vscode”连接真实 Ubuntu，以 Linux local 用户访问文件和 Docker。所有管理员共享这个宿主机身份。宿主机终端的 $DATASET 指向 /home/local/dataset，与成员读取同一数据集。</li>
           <li>打开 VS Code 后选择 Terminal → New Terminal。系统操作使用 sudo，输入 Linux local 用户密码；它与门户密码不同。</li>
           <li>“存储”的 workspace 地址可以复制，也可直接在远程 vscode 打开该成员目录，帮助导入文件或排查问题。</li>
@@ -53,7 +53,7 @@ export function HelpPage({ admin }: { admin: boolean }) {
       <section className="panel">
         <h2>3. 管理训练与调试</h2>
         <p>管理员查看、编辑、停止和删除记录，使用成员账号提交实验。排队中的记录可以修改资源、GPU 选择、时长和训练命令；运行中只可修改总时长，截止时间按原启动时间计算。启动中或已经结束的记录不能编辑。</p>
-        <p>超过 10 小时的调试在批准前不占 GPU，也不进入运行队列。管理员在“在线调试”批准或拒绝；审批意见保存在记录中。编辑待审批申请后仍须点击批准。</p>
+        <p>调试每次最多 8 小时，每人同时只能有一个会话，排队和停止中的会话也计入。一个会话可使用多张 GPU，训练和调试都至少申请一张 GPU。管理员可延长训练时长。</p>
         <p>停止或取消任务会释放 GPU。删除记录需要任务先结束，仅删除记录和日志，保留工作区及结果。删除工作区会清除代码、Python 环境和缓存；删除用户前须停用账号并结束任务。共享数据和宿主机目录受到保护。</p>
       </section>
     </> : <>
@@ -71,7 +71,7 @@ export function HelpPage({ admin }: { admin: boolean }) {
         <h2>3. 调试、训练与公共队列</h2>
         <p>工作区使用 CPU。交互式 GPU 实验到“在线调试”提交会话；批量实验到“训练任务”填写命令和资源。训练输出目录通过环境变量 LAB_RESULT_DIR 提供。</p>
         <p>自动分配使用可用显卡，也可以指定显卡。指定的卡忙碌时等待该卡，不会换成其他卡。平台避开外部进程占用的 GPU；监控不可用时 GPU 任务等待恢复。容器内的一张 GPU 显示为 CUDA 设备 0。</p>
-        <p>十小时以内按账号限额直接申请；超过十小时（最多七天）填写理由并等待管理员批准。会话运行后开始计时，关闭浏览器不会停止会话；结束实验时点击停止。使用 PyTorch 建议分配至少 4096 MB 内存。</p>
+        <p>调试按账号限额申请，每次最多 8 小时，每人同一时间只能有一个会话，可选择多张 GPU。会话运行后开始计时，关闭浏览器不会停止会话；结束实验时点击停止。调试和训练默认 4 CPU 线程、4 GB 内存。已结束记录和日志保留 7 天，工作区和训练结果持续保留。</p>
         <p>所有成员的任务摘要与队列公开。你只能打开、读取日志、取消或重试自己的任务，其他人的命令、日志和编辑器入口不公开。</p>
         <pre>{'nvcc --version\nnvidia-smi\npython -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"'}</pre>
       </section>

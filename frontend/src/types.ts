@@ -111,6 +111,8 @@ export interface QueueItem {
   requested_gpus: number;
   requested_gpu_indices: number[] | null;
   username: string;
+  can_manage: boolean;
+  cancel_requested: boolean;
 }
 export interface Variable {
   scope: string;
@@ -135,4 +137,13 @@ export interface Audit {
 export interface Remote {
   status: string;
   url: string | null;
+}
+
+export interface Announcement {
+  id: string;
+  title: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  published_at: string | null;
 }

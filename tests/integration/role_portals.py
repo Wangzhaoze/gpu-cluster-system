@@ -77,20 +77,20 @@ try:
   assert runtime.env(db,db.get(User,owner['id']),{},[],False)[key]=='global'
  call(member,'PUT','/settings/env',personal)
  passed('personal variable deletion and fallback to global; personal value can be restored')
- debug=call(other,'POST','/debug',{'requested_gpus':0,'time_limit_seconds':43200,'approval_reason':'Private disposable reason'},201)
- call(admin,'PATCH','/debug/'+debug['id'],{'requested_cpus':2,'requested_ram_mb':4096,'time_limit_seconds':46800})
- edited=next(r for r in call(admin,'GET','/debug') if r['id']==debug['id']);assert edited['status']=='AWAITING_APPROVAL' and edited['time_limit_seconds']==46800
+ debug=call(other,'POST','/debug',{'requested_gpus':1,'time_limit_seconds':3600,'approval_reason':'Private disposable reason'},201)
+ call(admin,'PATCH','/debug/'+debug['id'],{'time_limit_seconds':7200})
+ edited=next(r for r in call(admin,'GET','/debug') if r['id']==debug['id']);assert edited['status'] in {'PENDING','RUNNING'} and edited['time_limit_seconds']==7200
  summary=next(r for r in call(member,'GET','/debug') if r['id']==debug['id']);assert summary['can_manage'] is False and not {'command','route_path','approval_reason','approval_note','container_id','env_keys'} & summary.keys()
  call(member,'GET','/debug/'+debug['id']+'/logs',None,403);call(member,'POST','/debug/'+debug['id']+'/stop',None,403);call(member,'PATCH','/debug/'+debug['id'],{'time_limit_seconds':7200},403)
- passed('public other-member debug summary without private fields; admin queued edit retains approval')
- job=call(member,'POST','/jobs',{'command':'python -u -c '+__import__('shlex').quote('import os,time; print("TASK_ENV="+os.environ['+repr(key)+']); time.sleep(120)'),'requested_gpus':0,'requested_ram_mb':1024,'time_limit_seconds':180,'env':{key:'task-override'}},201)
- wait(lambda:'TASK_ENV=task-override' in call(member,'GET','/jobs/'+job['id']+'/logs')['log'],'CPU training variable injection')
+ passed('public other-member debug summary without private fields; admin duration edit preserves the session')
+ job=call(member,'POST','/jobs',{'command':'python -u -c '+__import__('shlex').quote('import os,time; print("TASK_ENV="+os.environ['+repr(key)+']); time.sleep(120)'),'requested_gpus':1,'requested_ram_mb':1024,'time_limit_seconds':180,'env':{key:'task-override'}},201)
+ wait(lambda:'TASK_ENV=task-override' in call(member,'GET','/jobs/'+job['id']+'/logs')['log'],'GPU-required training variable injection')
  prior=call(admin,'GET','/jobs/'+job['id'])
  call(admin,'PATCH','/jobs/'+job['id'],{'time_limit_seconds':240})
  updated=call(admin,'GET','/jobs/'+job['id']);assert updated['time_limit_seconds']==240 and updated['container_id']==prior['container_id']
  snapshot=next(r for r in call(other,'GET','/jobs') if r['id']==job['id']);assert not snapshot['can_manage'] and 'command' not in snapshot and 'error_message' not in snapshot
  call(other,'GET','/jobs/'+job['id'],None,403);call(other,'GET','/jobs/'+job['id']+'/logs',None,403);call(other,'POST','/jobs/'+job['id']+'/cancel',None,403)
- passed('member CPU training runs with task variable priority; running duration edit preserves container and private logs')
+ passed('member GPU training runs with task variable priority; running duration edit preserves container and private logs')
  busy=next((s for s in call(admin,'GET','/resources/gpus')['slots'] if s['state']!='FREE'),None)
  if busy:
   queued=call(member,'POST','/jobs',{'command':'python -c "print(1)"','requested_gpus':1,'gpu_indices':[busy['gpu_index']],'requested_ram_mb':1024,'time_limit_seconds':60},201)

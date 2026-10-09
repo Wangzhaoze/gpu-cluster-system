@@ -14,7 +14,7 @@ from docker.errors import DockerException, NotFound
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.orm import Session
 from .auth import admin_user, current_user, member_user, hasher, token_hash, verify_password
 from .config import settings
@@ -51,6 +51,8 @@ from .scheduler import get_scheduler
 from .scheduler.base import ACTIVE, TERMINAL
 from .storage import storage
 from .gpu_telemetry import read_telemetry
+from .announcements import router as announcements_router
+from .schemas import TrainingExtension
 
 app = FastAPI(
     title="GPU Lab Portal",
@@ -60,6 +62,7 @@ app = FastAPI(
     redoc_url=None,
 )
 scheduler = get_scheduler()
+app.include_router(announcements_router)
 attempts: dict[str, deque] = defaultdict(deque)
 attempt_lock = threading.Lock()
 dummy_hash = hasher.hash("invalid-account-dummy-password")
@@ -239,8 +242,7 @@ def validate_resources(user: User, spec):
         raise HTTPException(422, "指定的显卡编号不在本集群中")
     if (
         isinstance(spec, DebugSpec)
-        and spec.time_limit_seconds <= 36000
-        and spec.time_limit_seconds > user.max_debug_hours * 3600
+        and spec.time_limit_seconds > min(user.max_debug_hours, 8) * 3600
     ):
         raise HTTPException(422, "Debug 时间超过用户上限")
 
@@ -687,7 +689,9 @@ def delete_workspace(user_id: str | None = None, user: User = Depends(admin_user
 
 
 def list_workloads(db: Session, user: User, kind: str):
-    query = select(Workload).where(Workload.kind == kind)
+    query = select(Workload).where(Workload.kind == kind, or_(
+        Workload.status.not_in(TERMINAL),
+        func.coalesce(Workload.finished_at, Workload.created_at) >= now() - timedelta(days=7)))
     if user.role != "ADMIN":
         query = query.join(User, Workload.user_id == User.id).where(User.role == "MEMBER")
     records = []
@@ -733,6 +737,7 @@ def job(
 
 
 @app.post("/api/jobs/{resource_id}/cancel")
+@app.post("/api/jobs/{resource_id}/kill")
 def cancel_job(
     resource_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
@@ -753,23 +758,26 @@ def retry_job(
     owner = lock_user(db, db.get(User, old.user_id))
     if not owner or not owner.enabled:
         raise HTTPException(422, "用户已停用")
-    spec = JobSpec(
-        gpu_indices=old.requested_gpu_indices_json,
-        **{
-            key: getattr(old, key)
-            for key in (
-                "environment_id",
-                "requested_gpus",
-                "requested_cpus",
-                "requested_ram_mb",
-                "time_limit_seconds",
-                "command",
-                "workdir",
-                "output_name",
-            )
-        },
-        env=old.env_json,
-    )
+    try:
+        spec = JobSpec(
+            gpu_indices=old.requested_gpu_indices_json,
+            **{
+                key: getattr(old, key)
+                for key in (
+                    "environment_id",
+                    "requested_gpus",
+                    "requested_cpus",
+                    "requested_ram_mb",
+                    "time_limit_seconds",
+                    "command",
+                    "workdir",
+                    "output_name",
+                )
+            },
+            env=old.env_json,
+        )
+    except ValidationError:
+        raise HTTPException(422, "旧任务配置不符合当前资源限制，请新建训练任务并重新选择 GPU 和资源")
     validate_resources(owner, spec)
     allowed_environment(db, owner, spec.environment_id)
     resource = scheduler.submit_train(db, owner, spec)
@@ -809,6 +817,12 @@ def add_debug(
     if not user or not user.enabled:
         raise HTTPException(401, "用户已停用")
     validate_resources(user, spec)
+    # User row lock serializes submissions, including concurrent tabs.
+    if db.scalar(select(Workload.id).where(
+        Workload.user_id == user.id, Workload.kind == "debug",
+        Workload.status.in_(["AWAITING_APPROVAL", "PENDING", *ACTIVE])
+    ).limit(1)):
+        raise HTTPException(409, "每人同一时间只能有一个调试会话，请等待当前会话完全结束")
     spec.environment_id = allowed_environment(db, user, spec.environment_id).id
     resource = scheduler.start_debug(db, user, spec)
     audit(db, user, "debug.start", "debug", resource.id)
@@ -846,10 +860,13 @@ def decide_debug(db: Session, actor: User, resource_id: str, approved: bool, not
     if approved:
         if not owner.enabled:
             raise HTTPException(409, "用户已停用")
-        spec = DebugSpec(environment_id=resource.environment_id, requested_gpus=resource.requested_gpus,
-                         gpu_indices=resource.requested_gpu_indices_json, requested_cpus=resource.requested_cpus,
-                         requested_ram_mb=resource.requested_ram_mb, time_limit_seconds=resource.time_limit_seconds,
-                         approval_reason=resource.approval_reason)
+        try:
+            spec = DebugSpec(environment_id=resource.environment_id, requested_gpus=resource.requested_gpus,
+                             gpu_indices=resource.requested_gpu_indices_json, requested_cpus=resource.requested_cpus,
+                             requested_ram_mb=resource.requested_ram_mb, time_limit_seconds=resource.time_limit_seconds,
+                             approval_reason=resource.approval_reason)
+        except ValidationError:
+            raise HTTPException(422, "旧调试申请不符合当前限制：至少一张 GPU、最多 8 小时，请先编辑申请")
         validate_resources(owner, spec)
         allowed_environment(db, owner, spec.environment_id)
         resource.status, resource.approval_status = "PENDING", "APPROVED"
@@ -941,6 +958,8 @@ def queue(user: User = Depends(current_user), db: Session = Depends(get_db)):
             "requested_gpu_indices": item.requested_gpu_indices_json,
             "username": db.get(User, item.user_id).username,
             "created_at": item.created_at,
+            "can_manage": user.role == "ADMIN" or item.user_id == user.id,
+            "cancel_requested": item.cancel_requested,
         }
         for item in db.scalars(query)
     ]
@@ -1174,11 +1193,6 @@ def edit_workload(db: Session, actor: User, resource_id: str, kind: str, patch: 
         resource.expires_at = deadline
     for key, value in changes.items():
         setattr(resource, "requested_gpu_indices_json" if key == "gpu_indices" else key, getattr(spec, key))
-    if kind == "debug" and spec.time_limit_seconds > 36000 and resource.status != "AWAITING_APPROVAL":
-        if resource.approval_status != "APPROVED":
-            resource.approved_by, resource.approved_at = actor.id, now()
-        resource.approval_status = "APPROVED"
-        resource.approval_reason = spec.approval_reason
     audit(db, actor, f"{kind}.edit", kind, resource.id, {"fields": list(changes)})
     db.commit()
     return public_workload(resource, db)
@@ -1187,6 +1201,17 @@ def edit_workload(db: Session, actor: User, resource_id: str, kind: str, patch: 
 @app.patch("/api/jobs/{resource_id}")
 def patch_job(resource_id: str, spec: WorkloadPatch, user: User = Depends(admin_user), db: Session = Depends(get_db)):
     return edit_workload(db, user, resource_id, "train", spec)
+
+
+@app.post("/api/jobs/{resource_id}/extend")
+def extend_job(resource_id: str, spec: TrainingExtension, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    deletion_lock(db)
+    resource = accessible_resource(db, user, resource_id, "train")
+    try:
+        patch = WorkloadPatch(time_limit_seconds=resource.time_limit_seconds + spec.extra_seconds)
+    except ValidationError as error:
+        raise HTTPException(422, str(error))
+    return edit_workload(db, user, resource_id, "train", patch)
 
 
 @app.patch("/api/debug/{resource_id}")

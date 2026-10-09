@@ -20,7 +20,7 @@ def portal(monkeypatch):
     db.add(Environment(id='env', name='Python', image='image', image_version='test', enabled=True))
     people = {}
     for index, (name, role) in enumerate([('owner', 'MEMBER'), ('other', 'MEMBER'), ('admin', 'ADMIN')]):
-        people[name] = User(id=name, username=name, display_name=name, role=role, enabled=True, uid_hint=3000+index, default_environment_id='env', password_hash='test', max_gpus=1, max_debug_hours=10)
+        people[name] = User(id=name, username=name, display_name=name, role=role, enabled=True, uid_hint=3000+index, default_environment_id='env', password_hash='test', max_gpus=1, max_debug_hours=8)
         db.add(people[name])
         db.add(Workspace(user_id=name, route_path='/workspace/'+name+'/', state='STOPPED'))
     for name in people:
@@ -152,20 +152,22 @@ def test_admin_cannot_edit_transition_or_finished_workload(portal,state):
 
 def test_waiting_long_debug_edit_keeps_approval_pending(portal):
     client,db,people,actor=portal;actor[0]=people['admin'];r=db.get(Workload,'owner-debug');r.status='AWAITING_APPROVAL';r.approval_status='PENDING';r.time_limit_seconds=43200;db.commit()
-    assert client.patch('/api/debug/owner-debug',json={'time_limit_seconds':46800}).status_code==200
+    assert client.patch('/api/debug/owner-debug',json={'time_limit_seconds':7200}).status_code==200
     assert r.status=='AWAITING_APPROVAL' and r.approval_status=='PENDING'
 
 
-def test_admin_extension_of_short_debug_records_approval(portal):
+def test_admin_cannot_extend_debug_past_eight_hours(portal):
     client,db,people,actor=portal;actor[0]=people['admin']
-    assert client.patch('/api/debug/owner-debug',json={'time_limit_seconds':43200}).status_code==200
-    r=db.get(Workload,'owner-debug');assert r.approval_status=='APPROVED' and r.approved_by=='admin'
+    assert client.patch('/api/debug/owner-debug',json={'time_limit_seconds':43200}).status_code==422
+    r=db.get(Workload,'owner-debug');assert r.time_limit_seconds==3600 and r.approval_status=='NOT_REQUIRED'
 
 
 @pytest.mark.parametrize('path', ['jobs', 'debug'])
 def test_members_submit_multiple_gpus_and_admin_edits_with_owner_quota(portal, path):
     client, db, people, actor = portal
     people['owner'].max_gpus = 3
+    if path == 'debug':
+        db.get(Workload, 'owner-debug').status = 'CANCELLED'
     db.commit()
     payload = {'requested_gpus': 2, 'gpu_indices': [1, 2]}
     if path == 'jobs':

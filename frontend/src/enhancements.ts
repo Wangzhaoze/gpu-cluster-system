@@ -1,31 +1,5 @@
 const STYLE_ID = "gpu-lab-ui-enhancements";
 
-type LogTarget = { kind: "jobs" | "debug"; id: string };
-let lastLogTarget: LogTarget | null = null;
-
-const nativeFetch = window.fetch.bind(window);
-window.fetch = async (...args: Parameters<typeof fetch>) => {
-  const input = args[0];
-  const url =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url;
-  const match = url.match(
-    /\/api\/(jobs|debug)\/([a-f0-9-]{36})\/logs(?:$|[?#])/,
-  );
-  if (match) {
-    lastLogTarget = {
-      kind: match[1] as LogTarget["kind"],
-      id: match[2],
-    };
-  }
-  const response = await nativeFetch(...args);
-  if (match) queueMicrotask(enhance);
-  return response;
-};
-
 function ensureStyles() {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
@@ -47,9 +21,6 @@ function ensureStyles() {
       font-size: 14px;
       line-height: 1;
     }
-    .log-download-button {
-      white-space: nowrap;
-    }
   `;
   document.head.appendChild(style);
 }
@@ -64,51 +35,9 @@ function markPrivateLogs() {
   });
 }
 
-function addLogDownload() {
-  const modal = document.querySelector<HTMLElement>(
-    'section[aria-label="任务日志"]',
-  );
-  if (!modal) return;
-
-  const head = modal.querySelector<HTMLElement>(".panel-head");
-  if (!head || head.querySelector("[data-log-download]")) return;
-
-  const shortId =
-    head.querySelector("h2")?.textContent?.split("·").pop()?.trim() || "";
-  if (
-    !lastLogTarget ||
-    lastLogTarget.kind !== "jobs" ||
-    !lastLogTarget.id.startsWith(shortId)
-  ) {
-    return;
-  }
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = "下载 TXT";
-  button.className = "log-download-button";
-  button.dataset.logDownload = "true";
-  button.title = "下载完整训练日志为 TXT";
-  button.addEventListener("click", () => {
-    const anchor = document.createElement("a");
-    anchor.href = `/api/jobs/${lastLogTarget!.id}/logs/download`;
-    anchor.download = `training-${lastLogTarget!.id}.txt`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-  });
-
-  const close = Array.from(head.querySelectorAll("button")).find(
-    (item) => item.textContent?.includes("关闭"),
-  );
-  if (close) head.insertBefore(button, close);
-  else head.appendChild(button);
-}
-
 function enhance() {
   ensureStyles();
   markPrivateLogs();
-  addLogDownload();
 }
 
 const observer = new MutationObserver(enhance);
