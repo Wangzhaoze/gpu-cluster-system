@@ -8,10 +8,12 @@ class Settings:
     host_root: str = os.getenv("LAB_HOST_ROOT", "/tmp/lab")
     runtime_root: str = os.getenv("LAB_RUNTIME_ROOT", "/runtime")
     dataset_host_path: str = os.getenv("DATASET_HOST_PATH", "/tmp/lab/datasets")
+    dataset_elab_share_host_path: str = os.getenv("DATASET_ELAB_SHARE_HOST_PATH", "")
     network: str = "lab-net"
     project: str = "gpu-lab-poc"
     base_image: str = os.getenv("LAB_BASE_IMAGE", "lab-base-dev:2026.10-poc")
     torch_image: str = os.getenv("LAB_TORCH_IMAGE", "lab-torch-dev:2.7.1-cu128")
+    memory_reserve_mb: int = int(os.getenv("LAB_MEMORY_RESERVE_MB", "8192"))
     shm_size: str = os.getenv("LAB_SHM_SIZE", "2g")
     scheduler_backend: str = os.getenv("SCHEDULER_BACKEND", "mock-docker")
     secret: str = os.getenv("SESSION_SECRET", "test-only-secret")

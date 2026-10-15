@@ -16,6 +16,7 @@ def test_storage_mounts_persistent_user_state(tmp_path, monkeypatch):
             runtime_root=str(tmp_path),
             host_root="/srv/lab",
             dataset_host_path="/srv/datasets",
+            dataset_elab_share_host_path="",
         ),
     )
     storage = storage_module.DockerStorage()

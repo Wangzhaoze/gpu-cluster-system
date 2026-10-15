@@ -86,8 +86,8 @@ class GpuSelection(Input):
 class JobSpec(GpuSelection):
     environment_id: str | None = None
     requested_gpus: int = Field(default=1, ge=1, le=64)
-    requested_cpus: int = Field(default=4, ge=1, le=32)
-    requested_ram_mb: int = Field(default=4096, ge=256, le=65536)
+    requested_cpus: int = Field(default=4, ge=1)
+    requested_ram_mb: int = Field(default=4096, ge=256)
     time_limit_seconds: int = Field(default=3600, ge=5, le=604800)
     command: str = Field(min_length=1, max_length=10000)
     workdir: str = Field(default="/workspace", max_length=500)
@@ -113,8 +113,8 @@ class JobSpec(GpuSelection):
 class DebugSpec(GpuSelection):
     environment_id: str | None = None
     requested_gpus: int = Field(default=1, ge=1, le=64)
-    requested_cpus: int = Field(default=4, ge=1, le=32)
-    requested_ram_mb: int = Field(default=4096, ge=256, le=65536)
+    requested_cpus: int = Field(default=4, ge=1)
+    requested_ram_mb: int = Field(default=4096, ge=256)
     time_limit_seconds: int = Field(default=1800, ge=5, le=28800)
     approval_reason: str = Field(default="", max_length=2000)
 
@@ -162,8 +162,8 @@ class EnvSetting(Input):
 class WorkloadPatch(Input):
     requested_gpus: int | None = Field(default=None, ge=1, le=64)
     gpu_indices: list[StrictInt] | None = Field(default=None, max_length=64)
-    requested_cpus: int | None = Field(default=None, ge=1, le=32)
-    requested_ram_mb: int | None = Field(default=None, ge=256, le=65536)
+    requested_cpus: int | None = Field(default=None, ge=1)
+    requested_ram_mb: int | None = Field(default=None, ge=256)
     time_limit_seconds: int | None = Field(default=None, ge=5, le=604800)
     command: str | None = Field(default=None, min_length=1, max_length=10000)
     workdir: str | None = Field(default=None, max_length=500)

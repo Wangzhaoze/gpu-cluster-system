@@ -83,14 +83,17 @@ class DockerRuntime:
             "PIP_CACHE_DIR": "/scratch/pip",
             "PYTHONUNBUFFERED": "1",
         }
+        if settings.dataset_elab_share_host_path:
+            result["DATASET_ELAB_SHARE"] = f"/home/{user.username}/dataset_elab_share"
         for scope in ("global", user.id):
             for variable in db.scalars(
                 select(EnvVar).where(EnvVar.scope == scope, EnvVar.enabled.is_(True))
             ):
                 result[variable.key] = variable.value
         result.update(overrides)
-        if result.get("DATASET") in {"$HOME/dataset", "${HOME}/dataset"}:
-            result["DATASET"] = f"/home/{user.username}/dataset"
+        for key, folder in (("DATASET", "dataset"), ("DATASET_ELAB_SHARE", "dataset_elab_share")):
+            if result.get(key) in {f"$HOME/{folder}", f"${{HOME}}/{folder}"}:
+                result[key] = f"/home/{user.username}/{folder}"
         result.update(
             {
                 "LAB_USERNAME": user.username,

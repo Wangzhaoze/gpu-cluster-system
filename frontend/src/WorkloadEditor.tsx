@@ -1,8 +1,8 @@
 import React from "react";
-import type { Workload } from "./types";
+import type { Workload, ResourceCapacity } from "./types";
 
-export function WorkloadEditor({ item, maxGpus, busy, save, close }: {
-  item: Workload; maxGpus: number; busy: boolean; save: (data: Record<string, unknown>) => void; close: () => void;
+export function WorkloadEditor({ item, maxGpus, capacity, busy, save, close }: {
+  item: Workload; maxGpus: number; capacity?: ResourceCapacity; busy: boolean; save: (data: Record<string, unknown>) => void; close: () => void;
 }) {
   const running = item.status === "RUNNING";
   return <div className="modal-backdrop"><section className="modal workload-editor" role="dialog" aria-modal="true" aria-labelledby="workload-edit-title">
@@ -23,8 +23,8 @@ export function WorkloadEditor({ item, maxGpus, busy, save, close }: {
         {!running && <>
           <label className="field"><span>GPU 数量</span><input name="gpus" type="number" min="1" max={maxGpus} defaultValue={item.requested_gpus} required /></label>
           <label className="field"><span>显卡编号（逗号分隔，空白为自动）</span><input name="indices" defaultValue={item.requested_gpu_indices?.join(",") || ""} pattern="[0-9, ]*" /></label>
-          <label className="field"><span>CPU 线程数</span><input name="cpus" type="number" min="1" max="32" defaultValue={item.requested_cpus} required /></label>
-          <label className="field"><span>内存（GB）</span><input name="ram" type="number" min="0.25" max="64" step="any" defaultValue={(item.requested_ram_mb || 4096) / 1024} required /></label>
+          <label className="field"><span>CPU 线程数</span><input name="cpus" type="number" min="1" max={capacity?.total_cpus} defaultValue={item.requested_cpus} required /></label>
+          <label className="field"><span>内存（GB）</span><input name="ram" type="number" min="0.25" max={capacity ? capacity.schedulable_ram_mb / 1024 : undefined} step="any" defaultValue={(item.requested_ram_mb || 4096) / 1024} required /></label>
           {item.kind === "train" && <>
             <label className="field"><span>工作目录</span><input name="workdir" defaultValue={item.workdir} required /></label>
             <label className="field"><span>输出名称</span><input name="output" defaultValue={item.output_name} pattern="[A-Za-z0-9_-]{1,80}" required /></label>

@@ -35,10 +35,13 @@ class DockerStorage:
 
     def host_paths(self, username: str) -> dict[str, str]:
         root = settings.host_root.rstrip("/")
-        return {
+        paths = {
             **{kind: f"{root}/{relative}" for kind, relative in self.paths(username).items()},
             "datasets": settings.dataset_host_path,
         }
+        if settings.dataset_elab_share_host_path:
+            paths["datasets_elab_share"] = settings.dataset_elab_share_host_path
+        return paths
 
     def mounts(self, username: str) -> list[Mount]:
         paths = self.host_paths(username)
@@ -56,6 +59,11 @@ class DockerStorage:
                 Mount("/opt/user-state", f"lab_userstate_{username}", type="volume"),
             ]
         )
+        if "datasets_elab_share" in paths:
+            mounts.extend([
+                Mount("/datasets_elab_share", paths["datasets_elab_share"], type="bind", read_only=True),
+                Mount(f"/home/{username}/dataset_elab_share", paths["datasets_elab_share"], type="bind", read_only=True),
+            ])
         return mounts
 
     def usage(self, username: str) -> dict[str, int]:

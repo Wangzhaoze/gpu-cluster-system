@@ -27,6 +27,18 @@ def editor_root():
     return Path(get_env("LAB_HOST_ROOT")) / "host-editor"
 
 
+def dataset_sources():
+    sources = {"DATASET": Path(get_env("DATASET_HOST_PATH")).resolve(strict=True)}
+    try:
+        shared = get_env("DATASET_ELAB_SHARE_HOST_PATH")
+    except KeyError:
+        shared = ""
+    if shared:
+        # Keep the native administrator console available if the NAS is offline.
+        sources["DATASET_ELAB_SHARE"] = Path(shared).expanduser().absolute()
+    return sources
+
+
 def install():
     user = pwd.getpwuid(os.getuid())
     if user.pw_name != "local" or user.pw_uid == 0:
@@ -52,14 +64,15 @@ def install():
     python = home / "miniconda3/envs/dl/bin/python"
     if not python.exists():
         python = Path(shutil.which("python3"))
-    dataset = home / "dataset"
-    source = Path(get_env("DATASET_HOST_PATH")).resolve(strict=True)
-    if dataset.is_symlink() and dataset.resolve() != source:
-        dataset.unlink()
-    if not dataset.exists():
-        dataset.symlink_to(source, target_is_directory=True)
-    if dataset.resolve() != source:
-        raise RuntimeError("Host dataset alias conflicts with an existing directory")
+    sources = dataset_sources()
+    for key, source in sources.items():
+        dataset = home / ("dataset" if key == "DATASET" else "dataset_elab_share")
+        if dataset.is_symlink() and dataset.resolve() != source:
+            dataset.unlink()
+        if not dataset.exists():
+            dataset.symlink_to(source, target_is_directory=True)
+        if dataset.resolve() != source:
+            raise RuntimeError("Host dataset alias conflicts with an existing directory")
     shell_init = directory / "host-bashrc"
     shell_init.write_text('if test -f "$HOME/.bashrc"; then source "$HOME/.bashrc"; fi\n')
     conda = home / "miniconda3/etc/profile.d/conda.sh"
@@ -70,7 +83,8 @@ def install():
         with shell_init.open("a") as stream:
             stream.write("export PATH=" + shlex.quote(str(python.parent)) + ':"$PATH"\n')
     with shell_init.open("a") as stream:
-        stream.write("export DATASET=" + shlex.quote(str(dataset)) + "\n")
+        for key, source in sources.items():
+            stream.write("export " + key + "=" + shlex.quote(str(source)) + "\n")
     settings = directory / "user-data/User/settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     if not settings.exists():
@@ -108,7 +122,7 @@ def run():
     manifest = json.loads((directory / "manifest.json").read_text())
     if os.getuid() != manifest["uid"]:
         raise RuntimeError("Native host identity mismatch")
-    os.environ["DATASET"] = str(Path(manifest["home"]) / "dataset")
+    os.environ.update({key: str(source) for key, source in dataset_sources().items()})
     os.execv(manifest["binary"], [manifest["binary"], "--config", str(directory / "config.yaml"), manifest["home"]])
 
 

@@ -53,6 +53,7 @@ from .storage import storage
 from .gpu_telemetry import read_telemetry
 from .announcements import router as announcements_router
 from .schemas import TrainingExtension
+from . import resources as host_resources
 
 app = FastAPI(
     title="GPU Lab Portal",
@@ -235,7 +236,7 @@ def idle_user(db: Session, target: User):
         raise HTTPException(409, "请先停止调试并取消或等待训练任务结束")
 
 
-def validate_resources(user: User, spec):
+def validate_resources(user: User, spec, check_capacity=True):
     if spec.requested_gpus > min(user.max_gpus, settings.gpu_count):
         raise HTTPException(422, "GPU 数量超过用户或集群上限")
     if spec.gpu_indices is not None and any(index >= settings.gpu_count for index in spec.gpu_indices):
@@ -245,6 +246,8 @@ def validate_resources(user: User, spec):
         and spec.time_limit_seconds > min(user.max_debug_hours, 8) * 3600
     ):
         raise HTTPException(422, "Debug 时间超过用户上限")
+    if check_capacity:
+        host_resources.validate_request(spec.requested_cpus, spec.requested_ram_mb)
 
 
 @app.get("/api/health")
@@ -610,6 +613,7 @@ def workspace(
 
 
 def workspace_action(db: Session, actor: User, target: User, action: str):
+    deletion_lock(db)
     target = lock_user(db, target)
     if not target:
         raise HTTPException(404, "用户不存在")
@@ -624,6 +628,8 @@ def workspace_action(db: Session, actor: User, target: User, action: str):
         return payload
     container = runtime.get(runtime.name("workspace", target.username))
     record = db.get(Workspace, target.id)
+    if action in {"start", "restart"} and (not container or container.status != "running" or action == "restart"):
+        host_resources.require_available(db, 2, 2048, exclude_workspace=container.id if container and action == "restart" else None)
     if action in {"stop", "restart"}:
         if container:
             runtime.remove(container)
@@ -937,7 +943,7 @@ def gpus(user: User = Depends(current_user), db: Session = Depends(get_db)):
     online = heartbeat.exists() and time.time() - heartbeat.stat().st_mtime < 30
     return {"mode": settings.scheduler_backend, "worker_online": online, "slots": slots,
             "telemetry_status": telemetry["status"], "telemetry_sampled_at": telemetry["sampled_at"],
-            "telemetry_error": telemetry["error"]}
+            "telemetry_error": telemetry["error"], "capacity": host_resources.capacity(db)}
 
 
 @app.get("/api/resources/queue")
@@ -1179,7 +1185,7 @@ def edit_workload(db: Session, actor: User, resource_id: str, kind: str, patch: 
         spec = JobSpec(**data) if kind == "train" else DebugSpec(**data)
     except ValidationError as error:
         raise HTTPException(422, str(error))
-    validate_resources(owner, spec)
+    validate_resources(owner, spec, check_capacity=resource.status != "RUNNING")
     allowed_environment(db, owner, spec.environment_id)
     if resource.status == "RUNNING":
         started = resource.started_at
@@ -1270,6 +1276,7 @@ def user_storage(user: User = Depends(current_user), db: Session = Depends(get_d
         "bytes": storage.usage(username),
         "venv_volume": f"lab_pyenv_{username}",
         "datasets": "共享只读挂载 $HOME/dataset（$DATASET；兼容 /datasets）",
+        "datasets_elab_share": "$HOME/dataset_elab_share（$DATASET_ELAB_SHARE；只读 SMB 数据集）" if settings.dataset_elab_share_host_path else None,
     }
 
 

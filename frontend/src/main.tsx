@@ -13,6 +13,7 @@ import type {
   Remote,
   DockerImage,
   Announcement,
+  ResourceCapacity,
 } from "./types";
 import "./styles.css";
 import { HelpPage } from "./HelpPage";
@@ -73,11 +74,18 @@ const statusName: Record<string, string> = {
   TIMED_OUT: "已超时",
   FREE: "空闲",
   STOPPED: "已停止",
+  STOPPING: "停止中",
   AWAITING_APPROVAL: "等待管理员审批",
   REJECTED: "审批未通过",
   EXTERNAL_BUSY: "外部占用",
   DEBUGGING: "调试中",
   TRAINING: "训练中",
+};
+const debugProgress: Record<string, string> = {
+  AWAITING_APPROVAL: "调试申请正在等待管理员审批。",
+  PENDING: "调试申请已提交，正在排队等待 GPU 和资源。",
+  STARTING: "调试环境正在启动，请稍候。",
+  RUNNING: "调试会话正在运行，可在下方打开 VS Code 或停止会话。",
 };
 const loginFailure: Record<string, string> = {
   unknown_user: "用户名不存在",
@@ -235,6 +243,7 @@ function App() {
     telemetry_status: string;
     telemetry_sampled_at: string | null;
     telemetry_error: string | null;
+    capacity?: ResourceCapacity;
   }>({ mode: "mock-docker", worker_online: false, slots: [], telemetry_status: "unavailable", telemetry_sampled_at: null, telemetry_error: null });
   const [debugHours, setDebugHours] = useState(1);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -381,8 +390,8 @@ function App() {
     setBusy(true);
     try {
       await action();
-      await refresh();
       setNotice(message);
+      await refresh();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -425,8 +434,8 @@ function App() {
       e.available !== false &&
       (user?.role === "ADMIN" || e.id === user?.default_environment_id),
   );
-  const activeDebug = debug.filter((d) => !terminal.includes(d.status));
-  const ownDebugPending = debug.some(d => d.user_id === user?.id && !terminal.includes(d.status));
+  const activeDebug = debug.filter((d) => ["AWAITING_APPROVAL", "PENDING", "STARTING", "RUNNING"].includes(d.status));
+  const ownActiveDebug = activeDebug.find((d) => d.user_id === user?.id);
   const pendingTrainingCount = queue.filter((q) => q.kind === "train" && q.status === "PENDING").length;
   const nav = [
     ["dashboard", "总览"],
@@ -647,6 +656,20 @@ function App() {
                     {resources.mode === "local-gpu-docker" && resources.telemetry_status !== "online" ? "—" :
                       resources.slots.filter((s) => s.state === "FREE" && !s.external_busy).length}
                     <small> / {resources.slots.length}</small>
+                  </strong>
+                </div>
+                <div aria-label="可分配 CPU">
+                  <span>可分配 CPU</span>
+                  <strong>
+                    {resources.capacity?.available_cpus ?? "—"}
+                    <small> / {resources.capacity?.total_cpus ?? "—"} 线程</small>
+                  </strong>
+                </div>
+                <div aria-label="可分配内存">
+                  <span>可分配内存</span>
+                  <strong>
+                    {resources.capacity ? (resources.capacity.available_ram_mb / 1024).toFixed(1) : "—"}
+                    <small> / {resources.capacity ? (resources.capacity.schedulable_ram_mb / 1024).toFixed(1) : "—"} GB</small>
                   </strong>
                 </div>
                 <div>
@@ -931,7 +954,7 @@ function App() {
                         name="cpu"
                         type="number"
                         min="1"
-                        max="32"
+                        max={resources.capacity?.total_cpus}
                         defaultValue="4"
                         required
                       />
@@ -941,7 +964,7 @@ function App() {
                         name="ram"
                         type="number"
                         min="0.25"
-                        max="64"
+                        max={resources.capacity ? resources.capacity.schedulable_ram_mb / 1024 : undefined}
                         step="any"
                         defaultValue="4"
                         required
@@ -1078,15 +1101,18 @@ function App() {
           {page === "debug" && (
             <>
               {user.role === "MEMBER" && <section className="panel">
-                <h2>新建调试会话</h2>
+                <h2>{ownActiveDebug ? "当前调试会话" : "新建调试会话"}</h2>
+                {ownActiveDebug ? <div className="info" role="status" aria-label="当前调试会话状态">
+                  <Status value={ownActiveDebug.cancel_requested ? "STOPPING" : ownActiveDebug.status} kind="debug" />
+                  <p>{ownActiveDebug.cancel_requested ? "会话正在停止，资源释放后即可新建调试。" : debugProgress[ownActiveDebug.status]}</p>
+                </div> : <>
                 <p className="muted">每次最多 8 小时，每人同时只能有一个调试会话；一个会话可以使用多张 GPU。</p>
-                {ownDebugPending && <p className="info">你已有调试会话，请等待它结束后再创建。</p>}
                 <form
                   onSubmit={(e) =>
                     submit(
                       e,
-                      (f) =>
-                        api("/debug", "POST", {
+                      async (f) => {
+                        const session = await api<Workload>("/debug", "POST", {
                           environment_id: txt(f, "environment_id"),
                           requested_gpus: num(f, "gpu"),
                           gpu_indices: gpuIndices(f),
@@ -1094,7 +1120,9 @@ function App() {
                           requested_ram_mb: Math.round(num(f, "ram") * 1024),
                           time_limit_seconds: num(f, "hours") * 3600,
                           approval_reason: txt(f, "approval_reason"),
-                        }),
+                        });
+                        setDebug((current) => [session, ...current.filter((item) => item.id !== session.id)]);
+                      },
                       "调试会话已进入队列",
                     )
                   }
@@ -1126,7 +1154,7 @@ function App() {
                         type="number"
                         name="cpu"
                         min="1"
-                        max="32"
+                        max={resources.capacity?.total_cpus}
                         defaultValue="4"
                         required
                       />
@@ -1136,7 +1164,7 @@ function App() {
                         type="number"
                         name="ram"
                         min="0.25"
-                        max="64"
+                        max={resources.capacity ? resources.capacity.schedulable_ram_mb / 1024 : undefined}
                         step="any"
                         defaultValue="4"
                         required
@@ -1145,11 +1173,12 @@ function App() {
                   </div>
                   <div className="form-foot">
 
-                    <button className="primary" disabled={busy || ownDebugPending || user.max_gpus < 1 || !resources.slots.length}>
+                    <button className="primary" disabled={busy || user.max_gpus < 1 || !resources.slots.length}>
                       开启调试 →
                     </button>
                   </div>
                 </form>
+                </>}
               </section>}
               <section className="panel">
                 <h2>调试会话 {user.role === "ADMIN" && debug.some((d) => d.status === "AWAITING_APPROVAL") &&
@@ -1166,7 +1195,7 @@ function App() {
                           申请 {d.time_limit_seconds / 3600} 小时 · {d.requested_gpu_indices ? "指定 GPU " + d.requested_gpu_indices.join(", ") : "自动分配"} ·{" "}
                           {d.assigned_gpus.length
                             ? "GPU " + d.assigned_gpus.join(", ")
-                            : "等待 GPU 分配"}{" "}
+                            : "等待资源分配"}{" "}
                           ·{" "}
                           {d.expires_at
                             ? "剩余 " +
@@ -1878,7 +1907,7 @@ function App() {
           </footer>
         </main>
       </div>
-      {workloadEditing && user.role === "ADMIN" && <WorkloadEditor item={workloadEditing} maxGpus={Math.min(users.find((u) => u.id === workloadEditing.user_id)?.max_gpus || 0, resources.slots.length)} busy={busy} close={() => setWorkloadEditing(null)} save={data => act(async () => { await api("/" + (workloadEditing.kind === "debug" ? "debug" : "jobs") + "/" + workloadEditing.id, "PATCH", data); setWorkloadEditing(null); }, "任务已更新")} />}
+      {workloadEditing && user.role === "ADMIN" && <WorkloadEditor capacity={resources.capacity} item={workloadEditing} maxGpus={Math.min(users.find((u) => u.id === workloadEditing.user_id)?.max_gpus || 0, resources.slots.length)} busy={busy} close={() => setWorkloadEditing(null)} save={data => act(async () => { await api("/" + (workloadEditing.kind === "debug" ? "debug" : "jobs") + "/" + workloadEditing.id, "PATCH", data); setWorkloadEditing(null); }, "任务已更新")} />}
       {user.role === "MEMBER" && announcements.length > 0 && <MemberAnnouncement key={announcements[0].id} item={announcements[0]} acknowledge={async () => {
         const id = announcements[0].id;
         await api("/announcements/" + id + "/read", "POST");

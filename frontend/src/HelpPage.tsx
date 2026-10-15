@@ -44,7 +44,7 @@ export function HelpPage({ admin }: { admin: boolean }) {
         <h2>2. 管理账号与宿主机</h2>
         <ol className="steps">
           <li>在“用户管理”创建成员，选择默认 PyTorch 模板、GPU 上限和调试时长上限，复制登录信息给成员。初始密码只在创建后的信息卡中临时显示。</li>
-          <li>“宿主机 → 远程 vscode”连接真实 Ubuntu，以 Linux local 用户访问文件和 Docker。所有管理员共享这个宿主机身份。宿主机终端的 $DATASET 指向 /home/local/dataset，与成员读取同一数据集。</li>
+          <li>“宿主机 → 远程 vscode”连接真实 Ubuntu，以 Linux local 用户访问文件和 Docker。所有管理员共享这个宿主机身份。宿主机终端的 $DATASET 指向配置的本地数据集实际目录，$DATASET_ELAB_SHARE 指向已接入的 ELAB SMB 数据集；与成员读取同一份数据。</li>
           <li>打开 VS Code 后选择 Terminal → New Terminal。系统操作使用 sudo，输入 Linux local 用户密码；它与门户密码不同。</li>
           <li>“存储”的 workspace 地址可以复制，也可直接在远程 vscode 打开该成员目录，帮助导入文件或排查问题。</li>
         </ol>
@@ -61,11 +61,11 @@ export function HelpPage({ admin }: { admin: boolean }) {
         <h2>2. 工作区与 Python</h2>
         <ol className="steps">
           <li>在“工作区”点击启动，等待运行中后打开 VS Code；确认目录可信，再选择 Trust Folder &amp; Continue。</li>
-          <li>选择 Terminal → New Terminal。代码保存在 /workspace，共享数据通过环境变量 $DATASET（$HOME/dataset，只读）读取，输出保存在 /results，缓存位于 /scratch。</li>
+          <li>选择 Terminal → New Terminal。代码保存在 /workspace，共享数据通过环境变量 $DATASET（$HOME/dataset，只读）读取，输出保存在 /results，缓存位于 /scratch。ELAB 共享接入后，通过 $DATASET_ELAB_SHARE（$HOME/dataset_elab_share，只读）访问网络数据集。</li>
           <li>默认 Python 是 /opt/user-env/venv/bin/python，终端自动激活持久化环境。使用 pip 安装的包可在工作区、调试和训练中复用。</li>
           <li>停止或重新创建容器保留文件和 Python 包；容器中通过 apt 安装的软件不随容器重建保留。</li>
         </ol>
-        <pre>{'echo "$DATASET"\nls "$DATASET"\npython -c "import sys, torch; print(sys.executable, torch.__version__)"\npip install rich'}</pre>
+        <pre>{'echo "$DATASET"\nls "$DATASET"\nls "$DATASET_ELAB_SHARE"\npython -c "import sys, torch; print(sys.executable, torch.__version__)"\npip install rich'}</pre>
       </section>
       <section className="panel">
         <h2>3. 调试、训练与公共队列</h2>
@@ -76,6 +76,18 @@ export function HelpPage({ admin }: { admin: boolean }) {
         <pre>{'nvcc --version\nnvidia-smi\npython -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"'}</pre>
       </section>
     </>}
+    <section className="panel">
+      <h2>共享数据集迁入</h2>
+      <p>共享 $DATASET 和 $DATASET_ELAB_SHARE 对成员只读。成员不能在容器里直接移动数据进去；请把工作区内的数据集路径告诉管理员。管理员从宿主机复制到 $DATASET/用户名/数据集名，校验后发布，所有工作区、调试和训练会话立即可见，无需重启。</p>
+      {admin ? <>
+        <p>在宿主机终端执行，替换用户名和目录名。目标必须是新目录；先复制并校验，不要直接删除成员的源文件。完整迁移流程在仓库 docs/DATASET_IMPORT.md。</p>
+        <pre>{'member=yinshengwang\nname=my_dataset\nsrc="/home/local/gpu-cluster-system/runtime/users/$member/workspace/$name"\ndst="$DATASET/$member/$name"\ntest ! -e "$dst" && install -d -m 0755 "$DATASET/$member" && sudo rsync -aH --chown="$(id -u):$(id -g)" --chmod=D755,F644 --info=progress2 -- "$src/" "$dst/"\nsudo rsync -rcln --delete --itemize-changes -- "$src/" "$dst/"'}</pre>
+        <p>最后一条是 checksum 只读校验，包含 --dry-run（-n），不会删除文件；无输出表示文件内容和目录项一致。数据复制时请暂停向源目录写入，校验完成前不要使用目标目录训练。确认新路径可用后，再与成员约定旧目录的切换和清理时间。</p>
+      </> : <>
+        <p>例如 my_dataset 已迁入自己的共享子目录后，可这样访问；暂不删除工作区原件，待校验和训练验证后再清理。</p>
+        <pre>{'ls "$DATASET/$(id -un)/my_dataset"'}</pre>
+      </>}
+    </section>
     <section className="panel">
       <h2>4. 环境变量与固定模板</h2>
       <p>{admin ? '管理员可设置全局变量，也可选择单个用户设置个人变量。' : '全局变量由管理员设置，你可以新增、修改或删除自己的变量。相同名称的个人变量覆盖全局值。'}优先级为任务覆盖、个人设置、全局设置、默认值。修改立即同步到门户，在下一次创建工作区、调试或训练容器时注入；已经运行的容器不会自动改变。</p>
