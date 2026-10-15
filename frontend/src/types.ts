@@ -81,7 +81,7 @@ export interface Slot {
 }
 export interface ContainerWorkspace {
   mode: "container";
-  host_paths?: Record<"workspace" | "results" | "scratch" | "datasets", string>;
+  host_paths?: Record<"workspace" | "results" | "scratch" | "datasets", string> & { datasets_elab_share?: string };
   host_uid?: number;
   host_gid?: number;
   host_import_command?: string;
@@ -146,4 +146,15 @@ export interface Announcement {
   created_at: string;
   updated_at: string;
   published_at: string | null;
+}
+
+export interface ResourceCapacity {
+  total_cpus: number;
+  total_ram_mb: number;
+  reserved_ram_mb: number;
+  schedulable_ram_mb: number;
+  allocated_cpus: number;
+  allocated_ram_mb: number;
+  available_cpus: number;
+  available_ram_mb: number;
 }

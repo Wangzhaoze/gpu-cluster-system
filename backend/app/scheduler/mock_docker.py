@@ -7,6 +7,7 @@ from ..schemas import JobSpec, DebugSpec
 from ..docker_runtime import runtime
 from ..config import settings
 from ..storage import storage
+from .. import resources as host_resources
 from ..gpu_telemetry import read_telemetry
 from pathlib import Path
 from .base import ACTIVE, TERMINAL
@@ -234,6 +235,13 @@ class MockDockerScheduler:
                 Workload.status.in_(ACTIVE), Workload.id != resource.id
             ).limit(1)):
                 break  # Also serialize legacy queued debug sessions after an upgrade.
+            budget = host_resources.capacity(db)
+            invalid = host_resources.request_error(resource.requested_cpus, resource.requested_ram_mb, budget)
+            if invalid:
+                self.finish(db, resource, None, "FAILED", invalid)
+                continue
+            if resource.requested_cpus > budget['available_cpus'] or resource.requested_ram_mb > budget['available_ram_mb']:
+                break  # Preserve FIFO while waiting for CPU/RAM reservations.
             free = [
                 slot.gpu_index
                 for slot in self.list_resources(db)

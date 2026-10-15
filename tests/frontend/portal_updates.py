@@ -1,5 +1,6 @@
 """Browser regression checks with synthetic APIs; no production accounts/data."""
 import argparse
+import os
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -15,9 +16,9 @@ out.mkdir(parents=True, exist_ok=True)
 users = {name: {'id': name, 'username': name, 'display_name': name, 'role': role, 'enabled': True,
               'default_environment_id': 'env', 'max_gpus': 3, 'max_debug_hours': 8}
          for name, role in [('owner', 'MEMBER'), ('other', 'MEMBER'), ('admin', 'ADMIN')]}
-slots = [{'gpu_index': i, 'state': 'FREE' if i in [0, 3] else 'RUNNING', 'owner_type': {1: 'debug', 2: 'train'}.get(i),
+slots = [{'gpu_index': i, 'state': 'FREE' if i in [0, 3, 4] else 'RUNNING', 'owner_type': {1: 'debug', 2: 'train'}.get(i),
           'owner_id': None, 'username': 'other' if i in [1, 2] else None, 'started_at': None,
-          'external_busy': i == 3, 'metrics': None} for i in range(4)]
+          'external_busy': i == 3, 'metrics': None} for i in range(5)]
 base = {'status': 'PENDING', 'requested_gpus': 1, 'requested_cpus': 4, 'requested_ram_mb': 4096,
         'requested_gpu_indices': None, 'assigned_gpus': [], 'time_limit_seconds': 3600,
         'created_at': '2026-10-08T00:00:00Z', 'started_at': None, 'expires_at': None, 'finished_at': None,
@@ -27,6 +28,7 @@ announcements = []
 reads = set()
 mutations, errors, checks = [], [], []
 fail_ack = [False]
+capacity = {'total_cpus':30,'total_ram_mb':58820,'reserved_ram_mb':8192,'schedulable_ram_mb':50628,'allocated_cpus':10,'allocated_ram_mb':18432,'available_cpus':20,'available_ram_mb':32196}
 
 
 def passed(name):
@@ -47,6 +49,10 @@ def routes(actor):
                 item = {**base, **data, 'id': 'submitted-' + kind, 'kind': kind, 'username': actor['username'], 'user_id': actor['id'], 'can_manage': True}
                 records.append(item)
                 result, status = item, 201
+            elif path.endswith('/stop'):
+                item = next(item for item in records if item['id'] == path.split('/')[2])
+                item['cancel_requested'] = True
+                result = item
             elif path.endswith('/kill'):
                 next(item for item in records if item['id'] == path.split('/')[2])['cancel_requested'] = True
             elif path.endswith('/extend'):
@@ -70,7 +76,7 @@ def routes(actor):
                     item.update(data)
                     result = item
         elif path == '/auth/me': result = actor
-        elif path == '/resources/gpus': result = {'mode': 'local-gpu-docker', 'worker_online': True, 'telemetry_status': 'online', 'telemetry_sampled_at': '2026-10-08T00:00:00Z', 'telemetry_error': None, 'slots': slots}
+        elif path == '/resources/gpus': result = {'mode': 'local-gpu-docker', 'worker_online': True, 'telemetry_status': 'online', 'telemetry_sampled_at': '2026-10-08T00:00:00Z', 'telemetry_error': None, 'slots': slots, 'capacity': capacity}
         elif path == '/workspace': result = {'mode': 'container', 'state': 'STOPPED', 'route_path': '/workspace/owner/', 'container_id': None, 'environment': {'id': 'env', 'name': 'PyTorch'}, 'venv': '/opt/user-env/venv'}
         elif path in ['/jobs', '/debug']:
             kind = 'train' if path == '/jobs' else 'debug'
@@ -88,7 +94,7 @@ def routes(actor):
 
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(headless=True, executable_path=os.environ.get('TEST_BROWSER_EXECUTABLE') or None)
     def page_for(name):
         page = browser.new_page(viewport={'width': 1440, 'height': 1050})
         page.route('**/api/**', routes(users[name]))
@@ -99,6 +105,10 @@ with sync_playwright() as p:
     try:
         member, admin = page_for('owner'), page_for('admin')
         for page in [member, admin]:
+            expect(page.locator('.gpu-card')).to_have_count(5)
+            expect(page.get_by_label('可分配 CPU', exact=True).locator('strong')).to_have_text('20 / 30 线程')
+            expect(page.get_by_label('可分配内存', exact=True).locator('strong')).to_have_text('31.4 / 49.4 GB')
+            expect(page.get_by_label('主机资源预算')).to_have_count(0)
             for index, color in enumerate(['rgb(230, 247, 237)', 'rgb(230, 240, 255)', 'rgb(255, 241, 223)', 'rgb(237, 240, 243)']):
                 card = page.locator('.gpu-card').nth(index)
                 assert card.evaluate('(e) => getComputedStyle(e).backgroundColor') == color
@@ -109,6 +119,18 @@ with sync_playwright() as p:
             assert '显存控制器利用率' not in page.locator('main').inner_text() and '风扇' not in page.locator('main').inner_text()
         member.screenshot(path=str(out / 'member-gpu-overview.png'), full_page=True)
         admin.screenshot(path=str(out / 'admin-gpu-overview.png'), full_page=True)
+        capacity.update(available_cpus=0, available_ram_mb=0)
+        member.wait_for_timeout(3500)
+        for page in [member, admin]:
+            expect(page.get_by_label('可分配 CPU', exact=True).locator('strong')).to_have_text('0 / 30 线程')
+            expect(page.get_by_label('可分配内存', exact=True).locator('strong')).to_have_text('0.0 / 49.4 GB')
+        member.set_viewport_size({'width': 390, 'height': 844})
+        expect(member.get_by_label('可分配 CPU', exact=True)).to_be_visible()
+        assert member.locator('.stats').evaluate('(e) => e.scrollWidth <= e.clientWidth')
+        member.screenshot(path=str(out / 'member-resource-overview-mobile.png'), full_page=True)
+        member.set_viewport_size({'width': 1440, 'height': 1050})
+        capacity.update(available_cpus=20, available_ram_mb=32196)
+        passed('CPU and RAM summary cards display live scheduler availability for admin/member, including zero and mobile layout')
         passed('GPU card/status colors and user labels match for admin and member; removed metrics stay absent')
 
         own_queue = member.locator('.queue-list > div').filter(has_text='owner')
@@ -127,6 +149,10 @@ with sync_playwright() as p:
         member.locator('.gpu-picker select').select_option('manual')
         for index in [1, 2, 3]:
             expect(member.locator('.gpu-choices label').filter(has_text='GPU ' + str(index)).get_by_role('checkbox')).to_be_disabled()
+        fifth = member.locator('.gpu-choices label').filter(has_text='GPU 4').get_by_role('checkbox')
+        expect(fifth).to_be_enabled()
+        fifth.check()
+        assert 4 in json.loads(member.locator('input[name=gpu_indices]').input_value())
         member.locator('.gpu-picker select').select_option('auto')
         member.get_by_role('button', name='提交训练').click()
         expect(member.get_by_role('status')).to_contain_text('任务已提交到队列')
@@ -141,6 +167,8 @@ with sync_playwright() as p:
         expect(member.get_by_role('dialog', name='任务日志')).to_be_visible()
         expect(member.get_by_role('dialog', name='任务日志').get_by_role('button')).to_have_count(1)
         member.get_by_role('dialog', name='任务日志').get_by_role('button', name='关闭').click()
+        expect(member.locator('input[name="cpu"]')).to_have_attribute('max', '30')
+        expect(member.locator('input[name="ram"]')).to_have_attribute('max', str(50628 / 1024))
         passed('4 CPU/4 GB defaults convert to 4096 MiB, GPU is required, occupied GPUs are gray/disabled and TXT link sits beside logs')
 
         admin.locator('nav').get_by_role('button', name='训练任务').click()
@@ -150,14 +178,45 @@ with sync_playwright() as p:
         assert any(path == '/jobs/other-train/extend' and data == {'extra_seconds': 7200} for _, path, data in mutations)
         passed('administrator extension is explicit; members have no extension control')
 
+        # Other members and completed own history must not block a new session.
+        records.append({**base, 'id': 'other-debug', 'kind': 'debug', 'user_id': 'other', 'username': 'other', 'status': 'RUNNING'})
+        for state in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'REJECTED']:
+            records.append({**base, 'id': 'ended-debug-' + state, 'kind': 'debug', 'user_id': 'owner', 'username': 'owner', 'status': state})
         member.locator('nav').get_by_role('button', name='在线调试', exact=True).click()
         expect(member.get_by_label('CPU 线程数')).to_have_value('4')
         expect(member.get_by_label('内存 (GB)')).to_have_value('4')
         expect(member.get_by_label('会话时长（小时）')).to_have_attribute('max', '8')
+        expect(member.get_by_role('button', name='开启调试')).to_be_enabled()
+        pending_storage = []
+        def hold_storage(route):
+            pending_storage.append(route)
+        member.route('**/api/storage', hold_storage)
         member.get_by_role('button', name='开启调试').click()
-        expect(member.get_by_role('button', name='开启调试')).to_be_disabled()
-        expect(member.get_by_text('你已有调试会话，请等待它结束后再创建。')).to_be_visible()
-        passed('debug defaults match training, cap is eight hours and an unfinished own session disables a second submission')
+        try:
+            expect(member.get_by_role('status').filter(has_text='调试会话已进入队列')).to_be_visible(timeout=2000)
+            expect(member.get_by_label('当前调试会话状态')).to_contain_text('调试申请已提交，正在排队等待 GPU 和资源。')
+            expect(member.get_by_text('你已有调试会话，请等待它结束后再创建。')).to_have_count(0)
+            expect(member.get_by_role('button', name='开启调试')).to_have_count(0)
+        finally:
+            member.unroute('**/api/storage', hold_storage)
+            for route in pending_storage:
+                route.fulfill(status=200, content_type='application/json', body=json.dumps({'username':'owner','bytes':{'workspace':0,'results':0,'scratch':0}}))
+        current = next(item for item in records if item['id'] == 'submitted-debug')
+        row = member.locator('.debug-row').filter(has_text='submitte')
+        expect(row.get_by_role('button', name='停止', exact=True)).to_be_enabled()
+        row.get_by_role('button', name='停止', exact=True).click()
+        expect(member.get_by_label('当前调试会话状态')).to_contain_text('会话正在停止，资源释放后即可新建调试。')
+        expect(member.get_by_role('button', name='开启调试')).to_have_count(0)
+        current['cancel_requested'] = False
+        for state, message in [('AWAITING_APPROVAL','调试申请正在等待管理员审批。'), ('PENDING','调试申请已提交，正在排队等待 GPU 和资源。'), ('STARTING','调试环境正在启动，请稍候。'), ('RUNNING','调试会话正在运行，可在下方打开 VS Code 或停止会话。')]:
+            current['status'] = state
+            expect(member.get_by_label('当前调试会话状态')).to_contain_text(message, timeout=10000)
+            expect(member.get_by_role('button', name='开启调试')).to_have_count(0)
+        for state in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'REJECTED']:
+            current['status'] = state
+            expect(member.get_by_role('button', name='开启调试')).to_be_enabled(timeout=10000)
+            expect(member.get_by_label('当前调试会话状态')).to_have_count(0)
+        passed('accepted debug start shows immediate success despite slow storage; own active/stopping states are clear and ended/other sessions never block creation')
 
         admin.locator('nav').get_by_role('button', name='公告', exact=True).click()
         admin.get_by_label('公告标题').fill('Synthetic notice')

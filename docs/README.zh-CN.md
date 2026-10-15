@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="assets/readme-banner.svg" alt="GPU Lab：共享算力、独立工作区，四张 GPU 由统一调度器分配" width="100%" />
+<img src="assets/cluster-dashboard.png" alt="GPU Lab 总览首页：五张 GPU、CPU 和内存可分配额度、训练队列" width="100%" />
+
+<p><em>首页展示使用演示账号、任务和监控数据。</em></p>
 
 <h1>GPU Lab · GPU 实验平台</h1>
 
@@ -29,6 +31,8 @@
 | **排队训练** | 统一的先进先出调度器、GPU 配额、结果保存、日志和重试。 |
 | **GPU 在线调试** | 自动分配或指定显卡、最多八小时、每人同时一个会话。 |
 | **实时 GPU 监控** | 利用率、显存、温度、功耗，以及外部计算进程的可见性。 |
+| **CPU 与内存预算** | 总览展示剩余额度，按宿主机容量校验请求并统一安排工作区、训练和调试资源。 |
+| **共享数据集** | 通过 `$DATASET` 和 `$DATASET_ELAB_SHARE` 只读访问本地和 SMB 数据集。 |
 | **环境模板** | 固定版本的 Docker 镜像、CUDA 和 nvcc，以及 PyTorch 开发环境。 |
 | **实验平台管理** | 用户管理、工作负载控制、带保护机制的删除操作，以及保留的审计记录。 |
 
@@ -69,7 +73,7 @@
 ./scripts/lab.sh up --remote --no-build
 ```
 
-启动前，可使用 `./scripts/lab.sh bootstrap --dataset-path /absolute/datasets` 配置数据集路径。容器通过 `/datasets` 以只读方式访问数据集。用户文件和结果保存在 `runtime/` 下；Python 环境和 PostgreSQL 数据使用持久化 Docker 卷。
+启动前，可使用 `./scripts/lab.sh bootstrap --dataset-path /absolute/datasets` 配置数据集路径。容器通过 `$DATASET`（`$HOME/dataset`，兼容 `/datasets`）以只读方式访问数据集。将 SMB 数据集先持久挂载到 Ubuntu，再设置 `DATASET_ELAB_SHARE_HOST_PATH=/mnt/elab-share/Datasets`，即可通过 `$DATASET_ELAB_SHARE`（`$HOME/dataset_elab_share`，兼容 `/datasets_elab_share`）只读访问。SMB 凭据保存在宿主机 root 专用文件中，不放入仓库或 `.env`。用户文件和结果保存在 `runtime/` 下；Python 环境和 PostgreSQL 数据使用持久化 Docker 卷。
 
 ## GPU 配置
 
@@ -82,7 +86,7 @@ sudo ./scripts/setup-nvidia.sh
 ./scripts/lab.sh test --gpu
 ```
 
-在本机的 `.env` 中设置 `LOCAL_GPU_COUNT=4`。切换前，请先完成或取消正在运行的工作负载。门户中的 `LOCAL GPU MODE` 表示真实 GPU 调度，`MOCK GPU MODE` 表示模拟 GPU 槽位。CPU 工作区不会分配 GPU。目前未实现 Slurm 支持。
+在本机的 `.env` 中设置 `LOCAL_GPU_COUNT=5`。切换前，请先完成或取消正在运行的工作负载。门户中的 `LOCAL GPU MODE` 表示真实 GPU 调度，`MOCK GPU MODE` 表示模拟 GPU 槽位。CPU 工作区不会分配 GPU。目前未实现 Slurm 支持。
 
 ## CUDA 与 PyTorch
 
@@ -99,7 +103,7 @@ VS Code 已安装 Python 扩展，默认解释器为 `/opt/user-env/venv/bin/pyt
 
 ## GPU 监控
 
-概览页展示全部四张 GPU 的型号、利用率、显存、温度、功耗、时钟频率、驱动版本、PCI 地址及 UUID。`gpu-monitor` 每三秒采样一次 NVIDIA 工具计数器。页面会区分平台分配情况和外部计算进程；监测数据不可用或过期时，会显示提示和短横线。自动分配会跳过存在外部计算进程的显卡。指定的显卡忙碌时，任务会等待其空闲。真实监测数据不可用时，GPU 任务会等待监控恢复。
+概览页展示全部 GPU 的型号、利用率、显存、温度、功耗、时钟频率、驱动版本、PCI 地址及 UUID。`gpu-monitor` 每三秒采样一次 NVIDIA 工具计数器。页面会区分平台分配情况和外部计算进程；监测数据不可用或过期时，会显示提示和短横线。自动分配会跳过存在外部计算进程的显卡。指定的显卡忙碌时，任务会等待其空闲。真实监测数据不可用时，GPU 任务会等待监控恢复。
 
 在真实 GPU 模式下，运行 `./scripts/lab.sh up --remote --no-build` 会自动启动监控服务。该服务使用 Compose 的 `gpu` 配置档案，通过主机 PID 可见性让 NVML 枚举进程，使用主机用户的 UID/GID 写入快照，并移除 Linux capabilities、采用只读根文件系统。它不挂载 Docker socket。可通过以下命令查看日志：`sg docker -c 'docker compose --profile gpu logs --tail 30 gpu-monitor'`。
 
@@ -163,9 +167,15 @@ API 将任务请求持久保存到 PostgreSQL，独立的调度工作进程负�
 
 | 指南 | 内容 |
 | --- | --- |
+| [数据集迁移命令](DATASET_IMPORT.md) | 复制、checksum 校验、发布与原件保留 |
+| [宿主机资源升级](RESOURCE_UPGRADE_2026-10-15.md) | CPU／内存动态上限、五张 GPU 与验收结果 |
 | [公共访问和学生使用说明](REMOTE_ACCESS.md) | 公共链接、登录和学生使用流程 |
 | [Ubuntu 部署](UBUNTU_MIGRATION.md) | 主机配置、设置和迁移 |
 | [验证结果](UBUNTU_VALIDATION.md) | 部署检查和验收结果 |
 | [架构](ARCHITECTURE.md) | 服务、存储、调度和容器隔离 |
 | [实现说明](IMPLEMENTATION_NOTES.md) | 实现细节和项目限制 |
 | [English README](../README.md) | 本指南的完整英文版本 |
+
+## 宿主机资源预算
+
+当前 Ubuntu／Docker 主机提供 30 个逻辑 CPU、约 57.44 GiB 内存和五张 16 GB GPU。`LAB_MEMORY_RESERVE_MB=8192` 为系统和门户预留 8 GiB，其余预算由运行中的工作区、训练和调试共享。资源不足时任务按 FIFO 等待；默认仍为 4 CPU／4 GB，成员 GPU 配额保持不变。

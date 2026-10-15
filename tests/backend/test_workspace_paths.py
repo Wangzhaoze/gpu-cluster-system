@@ -13,7 +13,7 @@ from app.main import app
 
 @pytest.fixture
 def host_settings(monkeypatch):
-    settings = SimpleNamespace(host_root="/srv/gpu cluster's/runtime/", dataset_host_path="/srv/shared datasets", runtime_root="/runtime")
+    settings = SimpleNamespace(host_root="/srv/gpu cluster's/runtime/", dataset_host_path="/srv/shared datasets", dataset_elab_share_host_path="", runtime_root="/runtime")
     monkeypatch.setattr(storage_module, "settings", settings)
     return settings
 

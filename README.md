@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/readme-banner.svg" alt="GPU Lab — shared compute, personal workspaces, with four GPU cards and a shared scheduler" width="100%" />
+<img src="docs/assets/cluster-dashboard.png" alt="GPU Lab dashboard showing five GPUs, CPU and memory availability, and the training queue" width="100%" />
+
+<p><em>Dashboard preview with demonstration accounts, tasks, and telemetry.</em></p>
 
 <h1>GPU Lab</h1>
 
@@ -29,6 +31,8 @@
 | **Queued training** | A shared FIFO scheduler, GPU quotas, saved results, logs, and retries. |
 | **Interactive GPU debug** | Automatic or explicit card selection, up to eight hours and one session per member. |
 | **Live GPU monitoring** | Utilization, memory, temperature, power, and visibility into external compute processes. |
+| **CPU and memory budgets** | Live availability cards, host capacity checks, and shared resource admission for workspaces and jobs. |
+| **Shared datasets** | Read-only local and SMB datasets through `$DATASET` and `$DATASET_ELAB_SHARE`. |
 | **Environment templates** | Fixed Docker image versions, CUDA and nvcc, and a PyTorch development environment. |
 | **Lab administration** | User management, workload controls, protected deletion, and retained audit records. |
 
@@ -69,11 +73,11 @@ Open the printed public `https://….trycloudflare.com` link, or `http://localho
 ./scripts/lab.sh up --remote --no-build
 ```
 
-Supply datasets with `./scripts/lab.sh bootstrap --dataset-path /absolute/datasets` before startup. Containers see them read-only at `/datasets`. User files/results live under `runtime/`; Python environments and PostgreSQL use persistent Docker volumes.
+Supply datasets with `./scripts/lab.sh bootstrap --dataset-path /absolute/datasets` before startup. Containers read `$DATASET` at `$HOME/dataset` (also `/datasets`). To expose an existing host SMB dataset mount, set `DATASET_ELAB_SHARE_HOST_PATH=/mnt/elab-share/Datasets`; members read it through `$DATASET_ELAB_SHARE` at `$HOME/dataset_elab_share` (also `/datasets_elab_share`), read-only. Mount the share persistently on Ubuntu first and keep SMB credentials outside the repository and `.env`. User files/results live under `runtime/`; Python environments and PostgreSQL use persistent Docker volumes.
 
 ## GPU setup
 
-The host has four RTX 5060 Ti GPUs. NVIDIA drivers and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are required. The setup script installs the toolkit and restarts Docker; run it when workloads can be interrupted.
+The current host has five RTX 5060 Ti GPUs. NVIDIA drivers and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) are required. The setup script installs the toolkit and restarts Docker; run it when workloads can be interrupted.
 
 ```bash
 sudo ./scripts/setup-nvidia.sh
@@ -82,7 +86,7 @@ sudo ./scripts/setup-nvidia.sh
 ./scripts/lab.sh test --gpu
 ```
 
-Set `LOCAL_GPU_COUNT=4` in `.env` for this PC. Finish/cancel active workloads before switching. `LOCAL GPU MODE` in the portal means real GPU scheduling; `MOCK GPU MODE` means simulated slots. CPU workspaces do not receive GPUs. Slurm is not implemented.
+Set `LOCAL_GPU_COUNT=5` in `.env` for this PC. Finish/cancel active workloads before switching. `LOCAL GPU MODE` in the portal means real GPU scheduling; `MOCK GPU MODE` means simulated slots. CPU workspaces do not receive GPUs. Slurm is not implemented.
 
 ## CUDA & PyTorch
 
@@ -99,7 +103,7 @@ VS Code includes the Python extension. Its default interpreter is `/opt/user-env
 
 ## GPU monitoring
 
-The overview shows all four GPU models, utilization, memory, temperature, power, clocks, driver version, PCI address and UUID. `gpu-monitor` samples NVIDIA utility counters every three seconds. The page distinguishes platform allocation from external compute processes; unavailable/stale measurements display a message and dashes. Automatic allocation skips cards with external compute processes. A selected busy card waits until it is free. If real telemetry is unavailable, GPU jobs wait for monitoring to recover.
+The overview shows all GPU models, utilization, memory, temperature, power, clocks, driver version, PCI address and UUID. `gpu-monitor` samples NVIDIA utility counters every three seconds. The page distinguishes platform allocation from external compute processes; unavailable/stale measurements display a message and dashes. Automatic allocation skips cards with external compute processes. A selected busy card waits until it is free. If real telemetry is unavailable, GPU jobs wait for monitoring to recover.
 
 The monitor starts automatically with `./scripts/lab.sh up --remote --no-build` in real GPU mode. It uses the `gpu` Compose profile, host PID visibility for NVML process enumeration, the host user's UID/GID for writing snapshots, dropped capabilities and a read-only root filesystem. It has no Docker socket. To check it: `sg docker -c 'docker compose --profile gpu logs --tail 30 gpu-monitor'`.
 
@@ -163,6 +167,8 @@ The API persists job requests in PostgreSQL; a separate scheduler worker allocat
 
 | Guide | Contents |
 | --- | --- |
+| [Dataset import commands](docs/DATASET_IMPORT.md) | Copy, checksum, and publish workspace datasets without losing the originals |
+| [Host resource upgrade](docs/RESOURCE_UPGRADE_2026-10-15.md) | Dynamic CPU/RAM limits, five-GPU capacity, and verification |
 | [2026-10-08 portal update](docs/PORTAL_UPDATE_2026-10-08.md) | New controls, announcements and manual update/start script |
 | [Remote access & student guide](docs/REMOTE_ACCESS.md) | Public links, login, and student workflows |
 | [Ubuntu deployment](docs/UBUNTU_MIGRATION.md) | Host setup, configuration, and migration |
@@ -174,3 +180,7 @@ The API persists job requests in PostgreSQL; a separate scheduler worker allocat
 ## Workspace startup recovery
 
 If a workspace exits with `cp: cannot stat '/opt/lab/extensions/.': Permission denied`, use the updated base/PyTorch images: their public extension files and editor helpers are readable by members, with compatibility recovery for older pinned images. The existing-home `useradd` warning is harmless. See the [verified recovery and pending cleanup list](docs/WORKSPACE_RECOVERY_2026-10-07.md) for member mappings, preserved backups and the exact candidate names. No cleanup has been performed.
+
+## Upgraded host resources
+
+The current Ubuntu/Docker host provides 30 vCPUs, about 57.44 GiB RAM, and five 16 GB GPUs. CPU and memory request maxima follow Docker Engine capacity. `LAB_MEMORY_RESERVE_MB=8192` leaves 8 GiB for Ubuntu and cluster services; running workspaces and STARTING/RUNNING tasks share the remaining memory budget. Tasks wait in FIFO when CPU, RAM, or GPU reservations are insufficient. Member GPU quotas and the 4 CPU / 4 GB defaults are retained. See [resource upgrade verification](docs/RESOURCE_UPGRADE_2026-10-15.md).
